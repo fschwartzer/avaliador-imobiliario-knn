@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 
-MODULE_API_VERSION = "6.1.1"
+MODULE_API_VERSION = "6.1.2"
 
 
 DERIVED_AREA_LOTE = "__area_total_lote_efetiva"

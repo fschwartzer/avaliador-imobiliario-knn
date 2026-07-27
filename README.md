@@ -1,4 +1,4 @@
-# KNN Valuation Studio — versão 6.1.1
+# KNN Valuation Studio — versão 6.1.2
 
 Aplicativo Streamlit para inferência de valores imobiliários por comparáveis.
 
@@ -107,3 +107,23 @@ Após o commit no GitHub:
 2. confirme que a branch e o arquivo principal estão corretos;
 3. use **Reboot app**;
 4. se necessário, limpe o cache do aplicativo.
+
+
+## Correção da escala percentual
+
+A versão 6.1.2 corrige a apresentação dos campos:
+
+- `erro_percentual`;
+- `erro_percentual_absoluto`;
+- `peso_maximo`.
+
+Internamente, os valores permanecem como proporções decimais. Por exemplo,
+`-0,23` representa `-23%`. Na tabela do Streamlit, essas proporções são
+multiplicadas por 100 antes da inclusão do símbolo `%`.
+
+Na exportação para Excel, as proporções permanecem decimais, mas as células
+recebem o formato percentual nativo. Assim, o Excel mostra `-23,00%` e mantém
+o valor numérico correto para fórmulas posteriores.
+
+MdAPE, MAPE, P90 do erro percentual absoluto e viés mediano também recebem
+formato percentual na planilha de métricas.

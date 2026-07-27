@@ -22,7 +22,7 @@ except Exception as exc:
     st.error(
         "Não foi possível carregar os módulos internos do aplicativo. "
         "Substitua no repositório os arquivos app.py, knn_valuation.py e "
-        "schema_utils.py pelo mesmo pacote da versão 6.1.1."
+        "schema_utils.py pelo mesmo pacote da versão 6.1.2."
     )
     st.code(f"{type(exc).__name__}: {exc}")
     st.stop()
@@ -58,13 +58,13 @@ _schema_version = getattr(_schema, "MODULE_API_VERSION", "anterior")
 if (
     _missing_knn
     or _missing_schema
-    or _knn_version != "6.1.1"
-    or _schema_version != "6.1.1"
+    or _knn_version != "6.1.2"
+    or _schema_version != "6.1.2"
 ):
     st.error("Os arquivos publicados pertencem a versões diferentes.")
     st.markdown(
         """
-        O `app.py` da versão 6.1.1 precisa ser publicado junto com os arquivos
+        O `app.py` da versão 6.1.2 precisa ser publicado junto com os arquivos
         `knn_valuation.py` e `schema_utils.py` fornecidos no mesmo pacote.
         Substitua os três arquivos no GitHub, confirme o commit e reinicie o app.
         """
@@ -363,13 +363,58 @@ def dataframe_to_excel(
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         neighbors.to_excel(writer, sheet_name="Comparaveis_KNN", index=False)
         diagnostics_df.to_excel(writer, sheet_name="Diagnosticos", index=False)
+
         if backtest is not None:
             backtest.predictions.to_excel(
                 writer, sheet_name="Backtesting_Previsoes", index=False
             )
-            pd.DataFrame(
-                [{"metrica": key, "valor": value} for key, value in backtest.metrics.items()]
-            ).to_excel(writer, sheet_name="Backtesting_Metricas", index=False)
+
+            metrics_df = pd.DataFrame(
+                [
+                    {"metrica": key, "valor": value}
+                    for key, value in backtest.metrics.items()
+                ]
+            )
+            metrics_df.to_excel(
+                writer,
+                sheet_name="Backtesting_Metricas",
+                index=False,
+            )
+
+            # Mantém as razões decimais e usa o formato percentual nativo do Excel.
+            prediction_sheet = writer.sheets["Backtesting_Previsoes"]
+            prediction_headers = {
+                cell.value: cell.column for cell in prediction_sheet[1]
+            }
+            for column_name in (
+                "erro_percentual",
+                "erro_percentual_absoluto",
+                "peso_maximo",
+            ):
+                column_number = prediction_headers.get(column_name)
+                if column_number is None:
+                    continue
+                for row_number in range(2, prediction_sheet.max_row + 1):
+                    prediction_sheet.cell(
+                        row=row_number,
+                        column=column_number,
+                    ).number_format = "0.00%"
+
+            metric_sheet = writer.sheets["Backtesting_Metricas"]
+            percentage_metrics = {
+                "mdape",
+                "mape",
+                "p90_ape",
+                "median_bias",
+            }
+            for row_number in range(2, metric_sheet.max_row + 1):
+                metric_name = metric_sheet.cell(row=row_number, column=1).value
+                if metric_name in percentage_metrics:
+                    metric_sheet.cell(
+                        row=row_number,
+                        column=2,
+                    ).number_format = "0.00%"
+
     output.seek(0)
     return output.getvalue()
 
@@ -394,7 +439,7 @@ def risk_card(level: str, confidence: int, reasons: list[str]) -> None:
 st.markdown(
     """
     <div class="hero">
-        <span class="eyebrow">KNN Valuation Studio · versão 6.1.1</span>
+        <span class="eyebrow">KNN Valuation Studio · versão 6.1.2</span>
         <h1>Avaliação por comparáveis com regularização e validação realista.</h1>
         <p>
             K adaptativo, limite de influência individual, média robusta por MAD,
@@ -1287,8 +1332,20 @@ with tabs[3]:
         )
         st.line_chart(error_distribution)
 
+        backtest_display = backtest_result.predictions.copy()
+        percentage_point_columns = [
+            "erro_percentual",
+            "erro_percentual_absoluto",
+            "peso_maximo",
+        ]
+        for column in percentage_point_columns:
+            if column in backtest_display.columns:
+                # O núcleo armazena proporções decimais: -0,23 equivale a -23%.
+                # A tabela usa pontos percentuais para que o sufixo % seja correto.
+                backtest_display[column] = backtest_display[column] * 100.0
+
         st.dataframe(
-            backtest_result.predictions,
+            backtest_display,
             use_container_width=True,
             hide_index=True,
             column_config={
