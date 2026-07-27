@@ -99,16 +99,15 @@ def estimate_offer_discount(
     cap: float = 0.20,
 ) -> tuple[float, dict[str, Any]]:
     """
-    Calcula o desconto médio solicitado pelo usuário:
+    Estima o desconto por quantis pareados.
 
-        1 - média(valor unitário ITBI) / média(valor unitário Oferta)
+    Como as linhas de ITBI e oferta normalmente não identificam o mesmo imóvel,
+    comparar linhas aleatórias criaria uma razão sem significado. A solução
+    compara quantis equivalentes das duas distribuições e calcula a média de:
 
-    O cálculo ocorre depois do filtro por finalidade e usa valores unitários,
-    para não confundir diferença de área com diferença entre preço ofertado e
-    preço de transação. O desconto final é limitado ao intervalo [0, cap].
+        1 - valor_unitário_ITBI / valor_unitário_OFERTA
 
-    O cálculo é permitido mesmo quando existe apenas uma oferta, mas a baixa
-    quantidade é registrada como alerta de fragilidade amostral.
+    O resultado é limitado ao intervalo [0, cap].
     """
     itbi = _positive_values(itbi_unit_values)
     offers = _positive_values(offer_unit_values)
@@ -116,66 +115,42 @@ def estimate_offer_discount(
     diagnostics: dict[str, Any] = {
         "n_itbi_discount": int(itbi.size),
         "n_offer_discount": int(offers.size),
-        "discount_method": (
-            "1 - média do valor unitário ITBI / média do valor unitário Oferta"
-        ),
+        "discount_method": "média de descontos em quantis pareados",
         "discount_cap": float(cap),
     }
 
-    if itbi.size == 0 or offers.size == 0:
+    if itbi.size < 2 or offers.size < 2:
         diagnostics["discount_warning"] = (
-            "Desconto igual a zero: a finalidade selecionada não possui, ao "
-            "mesmo tempo, dados de Guia ITBI e de Oferta."
+            "Desconto igual a zero: são necessários ao menos dois dados de "
+            "Guia ITBI e dois de Oferta na finalidade selecionada."
         )
         return 0.0, diagnostics
 
-    mean_itbi = float(np.mean(itbi))
-    mean_offer = float(np.mean(offers))
+    n_quantiles = int(np.clip(min(itbi.size, offers.size), 5, 19))
+    quantiles = np.linspace(0.10, 0.90, n_quantiles)
 
-    if not np.isfinite(mean_offer) or mean_offer <= 0:
-        diagnostics["discount_warning"] = (
-            "Desconto igual a zero: a média unitária das ofertas é inválida."
-        )
+    q_itbi = np.quantile(itbi, quantiles)
+    q_offer = np.quantile(offers, quantiles)
+
+    valid = np.isfinite(q_itbi) & np.isfinite(q_offer) & (q_offer > 0)
+    raw_discounts = 1.0 - (q_itbi[valid] / q_offer[valid])
+    raw_discounts = raw_discounts[np.isfinite(raw_discounts)]
+
+    if raw_discounts.size == 0:
+        diagnostics["discount_warning"] = "Não foi possível calcular o desconto."
         return 0.0, diagnostics
 
-    raw_discount = float(1.0 - (mean_itbi / mean_offer))
-    discount = float(np.clip(raw_discount, 0.0, cap))
+    # Calcula primeiro a média solicitada e limita apenas o desconto final.
+    discount = float(np.clip(np.mean(raw_discounts), 0.0, cap))
 
     diagnostics.update(
         {
-            "mean_itbi_unit_value": mean_itbi,
-            "mean_offer_unit_value": mean_offer,
-            "raw_discount": raw_discount,
-            "discount_was_capped": bool(raw_discount > cap),
+            "raw_discount_mean": float(np.mean(raw_discounts)),
+            "raw_discount_median": float(np.median(raw_discounts)),
+            "quantiles_used": int(raw_discounts.size),
         }
     )
-
-    warnings: list[str] = []
-    if itbi.size < 3:
-        warnings.append(
-            f"há apenas {itbi.size} Guia(s) ITBI na finalidade selecionada"
-        )
-    if offers.size < 3:
-        warnings.append(
-            f"há apenas {offers.size} Oferta(s) na finalidade selecionada"
-        )
-    if raw_discount <= 0:
-        warnings.append(
-            "a média unitária das ofertas não superou a média unitária das "
-            "Guias ITBI; por isso não foi aplicado desconto"
-        )
-    if raw_discount > cap:
-        warnings.append(
-            f"o desconto bruto foi limitado ao teto de {cap:.0%}"
-        )
-
-    if warnings:
-        diagnostics["discount_warning"] = (
-            "Atenção à estimativa do desconto: " + "; ".join(warnings) + "."
-        )
-
     return discount, diagnostics
-
 
 
 def validate_mapping(df: pd.DataFrame, mapping: ColumnMapping) -> None:
@@ -356,7 +331,25 @@ def estimate_knn(
         ("area_construida", mapping.area_construida),
         ("area_privativa", mapping.area_privativa),
     ]
-    if territorial:
+
+    lot_target = target.get("siat_area_total_lote")
+    lot_target_valid = (
+        lot_target is not None
+        and np.isfinite(float(lot_target))
+        and float(lot_target) > 0
+    )
+    built_target_valid = any(
+        target.get(key) is not None
+        and np.isfinite(float(target[key]))
+        and float(target[key]) > 0
+        for key in ("area_construida", "area_privativa")
+    )
+
+    # Segurança adicional: quando só há área de lote informada, o núcleo
+    # reconhece o avaliando como territorial mesmo que a interface não tenha
+    # marcado explicitamente essa condição.
+    effective_territorial = territorial or (lot_target_valid and not built_target_valid)
+    if effective_territorial:
         feature_pairs.append(("siat_area_total_lote", mapping.siat_area_total_lote))
 
     active_features: list[tuple[str, str]] = []
@@ -370,7 +363,7 @@ def estimate_knn(
         ):
             active_features.append((target_key, data_column))
 
-    if territorial:
+    if effective_territorial:
         lot_active = any(key == "siat_area_total_lote" for key, _ in active_features)
         if not lot_active:
             raise ValueError(
@@ -508,6 +501,21 @@ def estimate_knn(
     neighbors["_peso_knn"] = normalized_weights
     neighbors["_contribuicao_valor_unitario"] = normalized_weights * unit_values
 
+    feature_coverage: dict[str, dict[str, float]] = {}
+    for target_key, column in active_features:
+        target_value = float(target[target_key])
+        candidate_values = data[column].to_numpy(dtype=float)
+        selected_values = neighbors[column].to_numpy(dtype=float)
+        relative_differences = np.abs(candidate_values - target_value) / target_value
+        feature_coverage[column] = {
+            "target": target_value,
+            "candidate_min": float(np.min(candidate_values)),
+            "candidate_max": float(np.max(candidate_values)),
+            "selected_min": float(np.min(selected_values)),
+            "selected_max": float(np.max(selected_values)),
+            "nearest_relative_difference": float(np.min(relative_differences)),
+        }
+
     diagnostics = {
         "k_requested": int(k),
         "k_used": int(n_neighbors),
@@ -516,6 +524,8 @@ def estimate_knn(
         "distance_power": float(distance_power),
         "n_candidates": int(len(data)),
         "reference_target_area": float(reference_target_value),
+        "effective_territorial": bool(effective_territorial),
+        "feature_coverage": feature_coverage,
     }
 
     return EstimateResult(

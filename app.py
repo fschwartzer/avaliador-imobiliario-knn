@@ -13,15 +13,22 @@ from knn_valuation import (
     normalize_text,
     prepare_data,
 )
+from schema_utils import (
+    DERIVED_AREA_CONSTRUIDA,
+    DERIVED_AREA_LOTE,
+    DERIVED_AREA_PRIVATIVA,
+    enrich_known_schemas,
+    friendly_column_name,
+)
 
 
 st.set_page_config(
-    page_title="Estimador Imobiliário KNN",
+    page_title="Avaliador Imobiliário KNN",
     page_icon="🏠",
     layout="wide",
 )
 
-st.title("Estimador Imobiliário por KNN")
+st.title("Avaliador Imobiliário por KNN")
 st.caption(
     "Estimativa por vizinhos comparáveis, com ajuste das ofertas em relação às "
     "Guias ITBI e maior peso para similaridade física do que para proximidade."
@@ -45,7 +52,13 @@ def optional_column_select(
 ) -> str | None:
     options = ["— Não utilizar —"] + columns
     preferred_idx = auto_index(options, preferred)
-    selected = st.selectbox(label, options, index=preferred_idx, key=key)
+    selected = st.selectbox(
+        label,
+        options,
+        index=preferred_idx,
+        key=key,
+        format_func=friendly_column_name,
+    )
     return None if selected == "— Não utilizar —" else selected
 
 
@@ -75,6 +88,26 @@ def dataframe_to_excel(df: pd.DataFrame, diagnostics: dict) -> bytes:
     return output.getvalue()
 
 
+def purpose_suggests_territorial(purpose: str) -> bool:
+    normalized = normalize_text(purpose)
+    terms = (
+        "terreno",
+        "gleba",
+        "lote",
+        "sitio",
+        "fazenda",
+        "area rural",
+        "chacara",
+    )
+    return any(term in normalized for term in terms)
+
+
+def valid_coordinate_fraction(series: pd.Series, latitude: bool) -> float:
+    numeric = pd.to_numeric(series, errors="coerce")
+    valid = numeric.between(-90, 90) if latitude else numeric.between(-180, 180)
+    return float(valid.mean()) if len(valid) else 0.0
+
+
 uploaded = st.file_uploader(
     "Selecione o arquivo Excel",
     type=["xlsx", "xlsm", "xls"],
@@ -93,33 +126,23 @@ except Exception as exc:
 
 sheet = st.selectbox("Planilha", excel_file.sheet_names)
 try:
-    df = pd.read_excel(excel_file, sheet_name=sheet)
+    original_df = pd.read_excel(excel_file, sheet_name=sheet)
 except Exception as exc:
     st.error(f"Não foi possível ler a planilha selecionada: {exc}")
     st.stop()
 
-if df.empty:
+if original_df.empty:
     st.error("A planilha selecionada não contém dados.")
     st.stop()
 
+original_df.columns = [str(column) for column in original_df.columns]
+df, schema_info = enrich_known_schemas(original_df)
 columns = [str(column) for column in df.columns]
-df.columns = columns
 
-siri_signature = {
-    "tipo_informacao",
-    "finalidade_oferta",
-    "area_construida",
-    "area_privativa",
-    "siat_area_total_lote",
-    "valor",
-    "latitude",
-    "longitude",
-}
-siri_detected = siri_signature.issubset(set(columns))
-if siri_detected:
+if schema_info.siri_detected:
     st.success(
-        "Estrutura SIRI reconhecida. O mapeamento padrão das colunas foi "
-        "preenchido automaticamente."
+        "Estrutura SIRI reconhecida. As colunas de finalidade, valor, "
+        "coordenadas e áreas foram pré-selecionadas automaticamente."
     )
 
 with st.expander("1. Mapeamento das colunas", expanded=True):
@@ -129,12 +152,22 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
         col_tipo = st.selectbox(
             "Tipo de informação",
             columns,
-            index=auto_index(columns, ["tipo_informação", "tipo_informacao"]),
+            index=auto_index(columns, ["tipo_informacao", "tipo_informação"]),
+            format_func=friendly_column_name,
         )
         col_finalidade = st.selectbox(
             "Finalidade da oferta",
             columns,
-            index=auto_index(columns, ["finalidade_oferta"]),
+            index=auto_index(
+                columns,
+                [
+                    "finalidade_oferta",
+                    "siat_finalidade_descricao",
+                    "finalidade",
+                    "tipo_imovel",
+                ],
+            ),
+            format_func=friendly_column_name,
         )
         col_valor = st.selectbox(
             "Coluna do valor",
@@ -151,25 +184,42 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
                     "valor_unitário",
                 ],
             ),
+            format_func=friendly_column_name,
         )
 
     with c2:
         col_area_construida = optional_column_select(
             "Área construída",
             columns,
-            ["area_construida", "área_construída"],
+            [
+                DERIVED_AREA_CONSTRUIDA,
+                "area_construida",
+                "crawler_area_construida",
+                "siat_area_construida",
+            ],
             "map_area_construida",
         )
         col_area_privativa = optional_column_select(
             "Área privativa",
             columns,
-            ["area_privativa", "área_privativa"],
+            [
+                DERIVED_AREA_PRIVATIVA,
+                "area_privativa",
+                "crawler_area_privativa",
+                "itbacopriv",
+            ],
             "map_area_privativa",
         )
         col_area_lote = optional_column_select(
             "Área total do lote",
             columns,
-            ["siat_area_total_lote"],
+            [
+                DERIVED_AREA_LOTE,
+                "siat_area_total_lote",
+                "area_total_lote",
+                "siat_area_terreno",
+                "crawler_area_terreno",
+            ],
             "map_area_lote",
         )
 
@@ -177,12 +227,17 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
         col_lat = st.selectbox(
             "Latitude",
             columns,
-            index=auto_index(columns, ["latitude", "lat"]),
+            index=auto_index(columns, ["latitude", "siat_latitude", "lat"]),
+            format_func=friendly_column_name,
         )
         col_lon = st.selectbox(
             "Longitude",
             columns,
-            index=auto_index(columns, ["longitude", "lon", "lng"]),
+            index=auto_index(
+                columns,
+                ["longitude", "siat_longitude", "lon", "lng"],
+            ),
+            format_func=friendly_column_name,
         )
         value_kind = st.radio(
             "Natureza da coluna de valor",
@@ -190,23 +245,21 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
             horizontal=False,
         )
 
-    possible_reference_columns = [
-        column
-        for column in [col_area_privativa, col_area_construida, col_area_lote]
-        if column is not None
-    ]
-    if not possible_reference_columns:
-        st.error("Mapeie ao menos uma coluna de área.")
-        st.stop()
+    if schema_info.notes:
+        st.caption(" ".join(schema_info.notes))
 
-    reference_area_column = st.selectbox(
-        "Área de referência para converter valor total em valor unitário",
-        possible_reference_columns,
-        help=(
-            "Exemplo: para apartamentos, normalmente área privativa; para terrenos, "
-            "área total do lote."
-        ),
+if valid_coordinate_fraction(df[col_lat], latitude=True) == 0:
+    st.error(
+        f"A coluna selecionada como latitude (`{col_lat}`) não contém "
+        "coordenadas numéricas válidas."
     )
+    st.stop()
+if valid_coordinate_fraction(df[col_lon], latitude=False) == 0:
+    st.error(
+        f"A coluna selecionada como longitude (`{col_lon}`) não contém "
+        "coordenadas numéricas válidas."
+    )
+    st.stop()
 
 mapping = ColumnMapping(
     tipo_informacao=col_tipo,
@@ -231,38 +284,17 @@ left, middle, right = st.columns(3)
 
 with left:
     selected_purpose = st.selectbox("Finalidade", purposes)
-
-    territorial = st.toggle(
-        "Imóvel territorial",
-        value=False,
-        help="Ativa a área total do lote como característica obrigatória.",
+    property_mode = st.selectbox(
+        "Tratamento do imóvel",
+        ["Automático", "Territorial", "Construído"],
+        help=(
+            "No modo automático, finalidades com termos como terreno, lote ou "
+            "gleba utilizam a área total do lote."
+        ),
     )
 
-purpose_mask = (
-    df[col_finalidade].map(normalize_text).eq(normalize_text(selected_purpose))
-)
-purpose_types = df.loc[purpose_mask, col_tipo].map(normalize_text)
-n_purpose = int(purpose_mask.sum())
-n_itbi_purpose = int(purpose_types.eq("guia itbi").sum())
-n_offer_purpose = int(purpose_types.eq("oferta").sum())
-n_rent_purpose = int(purpose_types.eq("oferta aluguel").sum())
+suggested_territorial = purpose_suggests_territorial(selected_purpose)
 
-q1, q2, q3, q4 = st.columns(4)
-q1.metric("Dados da finalidade", n_purpose)
-q2.metric("Guias ITBI", n_itbi_purpose)
-q3.metric("Ofertas", n_offer_purpose)
-q4.metric("Ofertas de aluguel excluídas", n_rent_purpose)
-
-if n_offer_purpose == 0:
-    st.warning(
-        "Esta finalidade não possui Oferta. O aplicativo usará apenas as "
-        "Guias ITBI e não aplicará desconto."
-    )
-elif n_offer_purpose < 3:
-    st.warning(
-        "Há poucas ofertas nesta finalidade. O desconto será calculado, mas "
-        "deve ser interpretado com cautela."
-    )
 with middle:
     target_area_construida = (
         st.number_input(
@@ -311,6 +343,65 @@ with right:
         format="%.7f",
     )
 
+has_built_area = target_area_construida > 0 or target_area_privativa > 0
+has_lot_area = target_area_lote > 0
+if property_mode == "Territorial":
+    territorial = True
+elif property_mode == "Construído":
+    territorial = False
+else:
+    territorial = suggested_territorial or (has_lot_area and not has_built_area)
+
+st.caption(
+    "Tratamento efetivo: **territorial**." if territorial
+    else "Tratamento efetivo: **construído**."
+)
+
+possible_reference_columns = [
+    column
+    for column in [col_area_privativa, col_area_construida, col_area_lote]
+    if column is not None
+]
+if not possible_reference_columns:
+    st.error("Mapeie ao menos uma coluna de área.")
+    st.stop()
+
+if territorial and col_area_lote in possible_reference_columns:
+    preferred_reference = col_area_lote
+elif col_area_privativa in possible_reference_columns:
+    preferred_reference = col_area_privativa
+elif col_area_construida in possible_reference_columns:
+    preferred_reference = col_area_construida
+else:
+    preferred_reference = possible_reference_columns[0]
+
+reference_area_column = st.selectbox(
+    "Área de referência para converter o valor total em valor unitário",
+    possible_reference_columns,
+    index=possible_reference_columns.index(preferred_reference),
+    format_func=friendly_column_name,
+    key=f"reference_{normalize_text(selected_purpose)}_{property_mode}",
+    help=(
+        "Para terrenos, use a área total do lote. Para unidades construídas, "
+        "use preferencialmente a área privativa ou a área construída."
+    ),
+)
+
+purpose_mask = df[col_finalidade].map(normalize_text).eq(
+    normalize_text(selected_purpose)
+)
+purpose_types = df.loc[purpose_mask, col_tipo].map(normalize_text)
+n_purpose = int(purpose_mask.sum())
+n_itbi_purpose = int(purpose_types.eq("guia itbi").sum())
+n_offer_purpose = int(purpose_types.eq("oferta").sum())
+n_rent_purpose = int(purpose_types.eq("oferta aluguel").sum())
+
+q1, q2, q3, q4 = st.columns(4)
+q1.metric("Dados da finalidade", n_purpose)
+q2.metric("Guias ITBI", n_itbi_purpose)
+q3.metric("Ofertas", n_offer_purpose)
+q4.metric("Ofertas de aluguel excluídas", n_rent_purpose)
+
 with st.expander("3. Parâmetros do KNN", expanded=True):
     p1, p2, p3 = st.columns(3)
     with p1:
@@ -348,7 +439,6 @@ target = {
     "longitude": target_lon,
 }
 
-# Permite que o núcleo encontre a área de referência pelo nome físico da coluna.
 if reference_area_column == col_area_construida:
     target[reference_area_column] = target["area_construida"]
 elif reference_area_column == col_area_privativa:
@@ -360,7 +450,7 @@ calculate = st.button("Calcular estimativa", type="primary", use_container_width
 
 if not calculate:
     with st.expander("Prévia dos dados"):
-        st.dataframe(df.head(50), use_container_width=True)
+        st.dataframe(original_df.head(50), use_container_width=True)
     st.stop()
 
 try:
@@ -416,6 +506,19 @@ st.caption(
 warning = preparation.diagnostics.get("discount_warning")
 if warning:
     st.warning(warning)
+
+coverage = estimate.diagnostics.get("feature_coverage", {})
+for feature_name, stats in coverage.items():
+    nearest_gap = float(stats.get("nearest_relative_difference", 0.0))
+    if nearest_gap > 0.30:
+        st.warning(
+            f"Baixa aderência em `{friendly_column_name(feature_name)}`: o dado "
+            f"mais próximo difere {nearest_gap:.1%} do avaliando. Os vizinhos "
+            f"selecionados variam de {number_br(stats['selected_min'])} a "
+            f"{number_br(stats['selected_max'])}, enquanto o avaliando possui "
+            f"{number_br(stats['target'])}. A estimativa deve ser tratada como "
+            "extrapolação ou interpolação em lacuna amostral."
+        )
 
 st.write(
     f"Foram considerados **{estimate.diagnostics['n_candidates']}** candidatos "
@@ -498,6 +601,7 @@ diagnostics = {
     "desvio_ponderado_unitario": estimate.weighted_std_unit,
     "desconto_ofertas": preparation.discount,
     "finalidade": selected_purpose,
+    "tratamento_territorial": territorial,
     "area_referencia": reference_area_column,
     "caracteristicas_ativas": ", ".join(estimate.active_features),
     **preparation.diagnostics,
@@ -519,8 +623,8 @@ with st.expander("Como o cálculo foi feito"):
 1. Filtra a finalidade informada.
 2. Mantém apenas `Guia ITBI` e `Oferta`; `Oferta aluguel` é descartada.
 3. Converte os valores para R$/m² pela área de referência.
-4. Calcula `1 - média(VU ITBI) / média(VU Oferta)`, limitado a 20%,
-   e aplica esse desconto somente às ofertas.
+4. Calcula o desconto entre os valores unitários de ITBI e oferta, limitado
+   a 20%, e aplica esse desconto somente às ofertas.
 5. Normaliza as áreas por mediana e intervalo interquartil.
 6. Combina distância física e distância geográfica, com maior peso padrão
    para as características do imóvel.
