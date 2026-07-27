@@ -1,4 +1,4 @@
-# Avaliador Imobiliário por KNN — versão 3
+# Avaliador Imobiliário por KNN — versão 5
 
 Aplicativo Streamlit para estimar o valor aproximado de um imóvel a partir de
 uma planilha Excel com dados de Guia ITBI, Oferta e Oferta aluguel.
@@ -49,3 +49,43 @@ No Streamlit Community Cloud, envie os arquivos para o GitHub e selecione
 
 Para a finalidade `TERRENO`, o aplicativo passa a usar automaticamente a área
 total do lote como característica e como área de referência.
+
+## Deduplicação das ofertas
+
+A versão 4 remove repetições do mesmo anúncio antes de calcular o desconto e
+antes de executar o KNN.
+
+A configuração padrão para arquivos SIRI é:
+
+- data: `data_encaminhamento`;
+- identificador prioritário: `anuncio_website`;
+- identificadores alternativos: `imobiliaria_codigo_anuncio` e
+  `origem_registro`.
+
+A primeira coluna identificadora preenchida em cada linha forma a chave da
+oferta. Em cada chave, o aplicativo ordena os registros pela data e mantém
+somente o mais recente. Se houver mais de um registro na mesma data, fica a
+última linha do arquivo. A deduplicação não é aplicada às Guias ITBI.
+
+A interface permite desativar a regra ou alterar as colunas usadas.
+
+## Estimativa robusta do desconto das ofertas
+
+A versão 5 preserva a comparação por quantis equivalentes entre as
+distribuições de valores unitários de Guia ITBI e Oferta, mas troca a média
+pela mediana.
+
+Para cada quantil pareado, calcula-se:
+
+`1 - valor_unitário_ITBI / valor_unitário_Oferta`
+
+O desconto adotado é a mediana desses resultados, limitada ao intervalo de
+0% a 20%. A mudança reduz a influência de razões extremas sem alterar:
+
+- o filtro por finalidade;
+- a exclusão das ofertas de aluguel;
+- a deduplicação das ofertas;
+- a conversão para valor unitário;
+- o teto de 20%;
+- a aplicação do desconto somente às ofertas;
+- os parâmetros e pesos do KNN.

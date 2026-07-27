@@ -729,8 +729,9 @@ with st.expander("Como o cálculo foi feito"):
 1. Filtra a finalidade informada.
 2. Mantém apenas `Guia ITBI` e `Oferta`; `Oferta aluguel` é descartada.
 3. Converte os valores para R$/m² pela área de referência.
-4. Calcula o desconto entre os valores unitários de ITBI e oferta, limitado
-   a 20%, e aplica esse desconto somente às ofertas.
+4. Calcula, em quantis pareados, a mediana de
+   `1 - VU_ITBI / VU_Oferta`, limita o resultado a 20% e aplica o desconto
+   somente às ofertas.
 5. Normaliza as áreas por mediana e intervalo interquartil.
 6. Combina distância física e distância geográfica, com maior peso padrão
    para as características do imóvel.

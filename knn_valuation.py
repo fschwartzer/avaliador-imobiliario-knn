@@ -103,7 +103,7 @@ def estimate_offer_discount(
 
     Como as linhas de ITBI e oferta normalmente não identificam o mesmo imóvel,
     comparar linhas aleatórias criaria uma razão sem significado. A solução
-    compara quantis equivalentes das duas distribuições e calcula a média de:
+    compara quantis equivalentes das duas distribuições e calcula a mediana de:
 
         1 - valor_unitário_ITBI / valor_unitário_OFERTA
 
@@ -115,7 +115,7 @@ def estimate_offer_discount(
     diagnostics: dict[str, Any] = {
         "n_itbi_discount": int(itbi.size),
         "n_offer_discount": int(offers.size),
-        "discount_method": "média de descontos em quantis pareados",
+        "discount_method": "mediana de descontos em quantis pareados",
         "discount_cap": float(cap),
     }
 
@@ -140,13 +140,14 @@ def estimate_offer_discount(
         diagnostics["discount_warning"] = "Não foi possível calcular o desconto."
         return 0.0, diagnostics
 
-    # Calcula primeiro a média solicitada e limita apenas o desconto final.
-    discount = float(np.clip(np.mean(raw_discounts), 0.0, cap))
+    # Calcula a mediana das razões de desconto e limita somente o resultado final.
+    raw_discount_median = float(np.median(raw_discounts))
+    discount = float(np.clip(raw_discount_median, 0.0, cap))
 
     diagnostics.update(
         {
-            "raw_discount_mean": float(np.mean(raw_discounts)),
-            "raw_discount_median": float(np.median(raw_discounts)),
+            "raw_discount_median": raw_discount_median,
+            "raw_discount_mean_diagnostic": float(np.mean(raw_discounts)),
             "quantiles_used": int(raw_discounts.size),
         }
     )
