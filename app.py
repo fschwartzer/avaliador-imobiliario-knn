@@ -16,12 +16,12 @@ from knn_valuation import (
 
 
 st.set_page_config(
-    page_title="Avaliador Imobiliário KNN",
+    page_title="Estimador Imobiliário KNN",
     page_icon="🏠",
     layout="wide",
 )
 
-st.title("Avaliador Imobiliário por KNN")
+st.title("Estimador Imobiliário por KNN")
 st.caption(
     "Estimativa por vizinhos comparáveis, com ajuste das ofertas em relação às "
     "Guias ITBI e maior peso para similaridade física do que para proximidade."
