@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from io import BytesIO
 from typing import Iterable
+import hashlib
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from knn_valuation import (
+    BacktestResult,
     ColumnMapping,
+    EstimateResult,
+    PreparationResult,
+    backtest_knn,
     estimate_knn,
     normalize_text,
     prepare_data,
@@ -24,24 +29,207 @@ from schema_utils import (
 
 
 st.set_page_config(
-    page_title="Avaliador Imobiliário KNN",
-    page_icon="🏠",
+    page_title="KNN Valuation Studio",
+    page_icon="◆",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("Avaliador Imobiliário por KNN")
-st.caption(
-    "Estimativa por vizinhos comparáveis, com ajuste das ofertas em relação às "
-    "Guias ITBI e maior peso para similaridade física do que para proximidade."
-)
+
+CUSTOM_CSS = """
+<style>
+:root {
+    --ink: #172033;
+    --muted: #667085;
+    --line: #E5EAF1;
+    --surface: #FFFFFF;
+    --canvas: #F5F7FA;
+    --navy: #173B57;
+    --teal: #0E7C7B;
+    --soft-teal: #E9F5F4;
+    --amber: #A15C00;
+    --soft-amber: #FFF4E5;
+    --red: #B42318;
+    --soft-red: #FEECEB;
+}
+.stApp {
+    background:
+        radial-gradient(circle at 85% 5%, rgba(14,124,123,.08), transparent 24rem),
+        var(--canvas);
+    color: var(--ink);
+}
+.block-container {
+    max-width: 1480px;
+    padding-top: 1.8rem;
+    padding-bottom: 4rem;
+}
+[data-testid="stSidebar"] {
+    border-right: 1px solid var(--line);
+    background: rgba(255,255,255,.94);
+}
+[data-testid="stSidebar"] .block-container {
+    padding-top: 1.4rem;
+}
+.hero {
+    position: relative;
+    overflow: hidden;
+    padding: 2rem 2.2rem;
+    border-radius: 22px;
+    border: 1px solid rgba(23,59,87,.14);
+    background:
+        linear-gradient(135deg, rgba(255,255,255,.98), rgba(236,246,246,.92));
+    box-shadow: 0 18px 45px rgba(23,59,87,.08);
+    margin-bottom: 1.4rem;
+}
+.hero:after {
+    content: "";
+    position: absolute;
+    width: 260px;
+    height: 260px;
+    right: -80px;
+    top: -120px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(14,124,123,.17), rgba(23,59,87,.04));
+}
+.eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .32rem .68rem;
+    border-radius: 999px;
+    background: rgba(14,124,123,.10);
+    color: #096968;
+    font-size: .76rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+.hero h1 {
+    font-size: clamp(2rem, 3.5vw, 3.25rem);
+    line-height: 1.02;
+    letter-spacing: -.045em;
+    margin: .85rem 0 .7rem;
+    max-width: 900px;
+    color: var(--ink);
+}
+.hero p {
+    max-width: 850px;
+    color: var(--muted);
+    font-size: 1.02rem;
+    line-height: 1.65;
+    margin: 0;
+}
+.section-title {
+    margin: 1.3rem 0 .75rem;
+}
+.section-title h2 {
+    font-size: 1.28rem;
+    margin: 0;
+    letter-spacing: -.02em;
+}
+.section-title p {
+    color: var(--muted);
+    margin: .25rem 0 0;
+    font-size: .91rem;
+}
+[data-testid="stMetric"] {
+    background: rgba(255,255,255,.92);
+    border: 1px solid var(--line);
+    padding: 1rem 1.05rem;
+    border-radius: 16px;
+    box-shadow: 0 8px 25px rgba(23,59,87,.045);
+}
+[data-testid="stMetricLabel"] {
+    color: var(--muted);
+}
+[data-testid="stMetricValue"] {
+    color: var(--ink);
+    letter-spacing: -.03em;
+}
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-color: var(--line) !important;
+    border-radius: 18px !important;
+    background: rgba(255,255,255,.78);
+    box-shadow: 0 10px 28px rgba(23,59,87,.035);
+}
+.stButton > button, .stDownloadButton > button {
+    border-radius: 12px;
+    font-weight: 700;
+    border: 0;
+    min-height: 2.8rem;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--navy), var(--teal));
+    box-shadow: 0 10px 22px rgba(14,124,123,.18);
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: .45rem;
+    background: rgba(255,255,255,.72);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: .35rem;
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px;
+    padding: .45rem .9rem;
+}
+.stTabs [aria-selected="true"] {
+    background: var(--soft-teal);
+    color: var(--teal);
+}
+.risk-card {
+    border-radius: 16px;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--line);
+    background: #fff;
+    min-height: 128px;
+}
+.risk-card.low { border-left: 5px solid #0E7C7B; }
+.risk-card.moderate { border-left: 5px solid #D97706; }
+.risk-card.high { border-left: 5px solid #B42318; }
+.risk-label {
+    color: var(--muted);
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+.risk-value {
+    font-size: 1.5rem;
+    font-weight: 800;
+    margin: .25rem 0;
+    color: var(--ink);
+}
+.risk-text {
+    color: var(--muted);
+    font-size: .88rem;
+    line-height: 1.45;
+}
+.inline-note {
+    padding: .9rem 1rem;
+    border-radius: 14px;
+    background: rgba(23,59,87,.045);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: .9rem;
+}
+.small-muted { color: var(--muted); font-size: .84rem; }
+div[data-testid="stDataFrame"] {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 def auto_index(options: list[str], preferred: Iterable[str]) -> int:
     normalized = {normalize_text(value): i for i, value in enumerate(options)}
     for candidate in preferred:
-        idx = normalized.get(normalize_text(candidate))
-        if idx is not None:
-            return idx
+        found = normalized.get(normalize_text(candidate))
+        if found is not None:
+            return found
     return 0
 
 
@@ -52,11 +240,10 @@ def optional_column_select(
     key: str,
 ) -> str | None:
     options = ["— Não utilizar —"] + columns
-    preferred_idx = auto_index(options, preferred)
     selected = st.selectbox(
         label,
         options,
-        index=preferred_idx,
+        index=auto_index(options, preferred),
         key=key,
         format_func=friendly_column_name,
     )
@@ -66,70 +253,129 @@ def optional_column_select(
 def money_br(value: float, decimals: int = 2) -> str:
     if not np.isfinite(value):
         return "—"
-    formatted = f"{value:,.{decimals}f}"
-    return "R$ " + formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    text = f"{value:,.{decimals}f}"
+    return "R$ " + text.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def number_br(value: float, decimals: int = 2) -> str:
     if not np.isfinite(value):
         return "—"
-    formatted = f"{value:,.{decimals}f}"
-    return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    text = f"{value:,.{decimals}f}"
+    return text.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def dataframe_to_excel(df: pd.DataFrame, diagnostics: dict) -> bytes:
-    output = BytesIO()
-    diagnostics_df = pd.DataFrame(
-        [{"indicador": key, "valor": value} for key, value in diagnostics.items()]
-    )
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Comparaveis_KNN", index=False)
-        diagnostics_df.to_excel(writer, sheet_name="Diagnosticos", index=False)
-    output.seek(0)
-    return output.getvalue()
+def percent_br(value: float, decimals: int = 1) -> str:
+    if not np.isfinite(value):
+        return "—"
+    return f"{value * 100:.{decimals}f}%".replace(".", ",")
 
 
 def purpose_suggests_territorial(purpose: str) -> bool:
     normalized = normalize_text(purpose)
-    terms = (
-        "terreno",
-        "gleba",
-        "lote",
-        "sitio",
-        "fazenda",
-        "area rural",
-        "chacara",
+    return any(
+        term in normalized
+        for term in (
+            "terreno",
+            "gleba",
+            "lote",
+            "sitio",
+            "fazenda",
+            "area rural",
+            "chacara",
+        )
     )
-    return any(term in normalized for term in terms)
 
 
-def valid_coordinate_fraction(series: pd.Series, latitude: bool) -> float:
-    numeric = pd.to_numeric(series, errors="coerce")
-    valid = numeric.between(-90, 90) if latitude else numeric.between(-180, 180)
-    return float(valid.mean()) if len(valid) else 0.0
+def dataframe_to_excel(
+    neighbors: pd.DataFrame,
+    diagnostics: dict,
+    backtest: BacktestResult | None,
+) -> bytes:
+    output = BytesIO()
+    diagnostics_df = pd.DataFrame(
+        [{"indicador": key, "valor": str(value)} for key, value in diagnostics.items()]
+    )
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        neighbors.to_excel(writer, sheet_name="Comparaveis_KNN", index=False)
+        diagnostics_df.to_excel(writer, sheet_name="Diagnosticos", index=False)
+        if backtest is not None:
+            backtest.predictions.to_excel(
+                writer, sheet_name="Backtesting_Previsoes", index=False
+            )
+            pd.DataFrame(
+                [{"metrica": key, "valor": value} for key, value in backtest.metrics.items()]
+            ).to_excel(writer, sheet_name="Backtesting_Metricas", index=False)
+    output.seek(0)
+    return output.getvalue()
 
 
-uploaded = st.file_uploader(
-    "Selecione o arquivo Excel",
-    type=["xlsx", "xlsm", "xls"],
-    help="O arquivo permanece em memória durante a sessão do aplicativo.",
+def risk_card(level: str, confidence: int, reasons: list[str]) -> None:
+    css_level = {"baixo": "low", "moderado": "moderate", "alto": "high"}.get(
+        level, "moderate"
+    )
+    reason = reasons[0] if reasons else "Boa aderência aos dados observados."
+    st.markdown(
+        f"""
+        <div class="risk-card {css_level}">
+            <div class="risk-label">Confiabilidade da estimativa</div>
+            <div class="risk-value">{level.capitalize()} risco · {confidence}/100</div>
+            <div class="risk-text">{reason}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+st.markdown(
+    """
+    <div class="hero">
+        <span class="eyebrow">KNN Valuation Studio · versão 6</span>
+        <h1>Avaliação por comparáveis com regularização e validação realista.</h1>
+        <p>
+            K adaptativo, limite de influência individual, média robusta por MAD,
+            diagnóstico de extrapolação e backtesting com exclusão do próprio imóvel.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
+with st.sidebar:
+    st.markdown("### Base de dados")
+    uploaded = st.file_uploader(
+        "Arquivo Excel",
+        type=["xlsx", "xlsm", "xls"],
+        help="O arquivo é processado em memória durante a sessão.",
+    )
+
 if uploaded is None:
-    st.info("Envie um arquivo Excel para iniciar.")
+    st.info(
+        "Envie uma planilha Excel na barra lateral. A interface reconhecerá "
+        "automaticamente a estrutura SIRI quando disponível."
+    )
     st.stop()
 
+file_bytes = uploaded.getvalue()
+file_signature = hashlib.sha1(file_bytes).hexdigest()
 try:
-    excel_file = pd.ExcelFile(uploaded)
+    excel_file = pd.ExcelFile(BytesIO(file_bytes))
 except Exception as exc:
     st.error(f"Não foi possível abrir o arquivo: {exc}")
     st.stop()
 
-sheet = st.selectbox("Planilha", excel_file.sheet_names)
+with st.sidebar:
+    sheet = st.selectbox("Planilha", excel_file.sheet_names)
+
+run_signature = f"{file_signature}:{sheet}"
+if st.session_state.get("_file_signature") != run_signature:
+    st.session_state["_file_signature"] = run_signature
+    st.session_state.pop("valuation_run", None)
+    st.session_state.pop("backtest_run", None)
+
 try:
-    original_df = pd.read_excel(excel_file, sheet_name=sheet)
+    original_df = pd.read_excel(BytesIO(file_bytes), sheet_name=sheet)
 except Exception as exc:
-    st.error(f"Não foi possível ler a planilha selecionada: {exc}")
+    st.error(f"Não foi possível ler a planilha: {exc}")
     st.stop()
 
 if original_df.empty:
@@ -139,17 +385,13 @@ if original_df.empty:
 original_df.columns = [str(column) for column in original_df.columns]
 df, schema_info = enrich_known_schemas(original_df)
 columns = [str(column) for column in df.columns]
+original_columns = [str(column) for column in original_df.columns]
 
-if schema_info.siri_detected:
-    st.success(
-        "Estrutura SIRI reconhecida. As colunas de finalidade, valor, "
-        "coordenadas e áreas foram pré-selecionadas automaticamente."
-    )
+with st.sidebar:
+    if schema_info.siri_detected:
+        st.success("Estrutura SIRI reconhecida.")
 
-with st.expander("1. Mapeamento das colunas", expanded=True):
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
+    with st.expander("Mapeamento de colunas", expanded=False):
         col_tipo = st.selectbox(
             "Tipo de informação",
             columns,
@@ -157,7 +399,7 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
             format_func=friendly_column_name,
         )
         col_finalidade = st.selectbox(
-            "Finalidade da oferta",
+            "Finalidade",
             columns,
             index=auto_index(
                 columns,
@@ -171,24 +413,20 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
             format_func=friendly_column_name,
         )
         col_valor = st.selectbox(
-            "Coluna do valor",
+            "Valor",
             columns,
             index=auto_index(
                 columns,
                 [
                     "valor",
-                    "valor_total",
                     "valor_oferta",
+                    "valor_total",
                     "preco",
-                    "preço",
                     "valor_unitario",
-                    "valor_unitário",
                 ],
             ),
             format_func=friendly_column_name,
         )
-
-    with c2:
         col_area_construida = optional_column_select(
             "Área construída",
             columns,
@@ -198,7 +436,7 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
                 "crawler_area_construida",
                 "siat_area_construida",
             ],
-            "map_area_construida",
+            "v6_area_construida",
         )
         col_area_privativa = optional_column_select(
             "Área privativa",
@@ -209,22 +447,19 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
                 "crawler_area_privativa",
                 "itbacopriv",
             ],
-            "map_area_privativa",
+            "v6_area_privativa",
         )
         col_area_lote = optional_column_select(
-            "Área total do lote",
+            "Área do lote",
             columns,
             [
                 DERIVED_AREA_LOTE,
                 "siat_area_total_lote",
-                "area_total_lote",
                 "siat_area_terreno",
                 "crawler_area_terreno",
             ],
-            "map_area_lote",
+            "v6_area_lote",
         )
-
-    with c3:
         col_lat = st.selectbox(
             "Latitude",
             columns,
@@ -235,107 +470,106 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
             "Longitude",
             columns,
             index=auto_index(
-                columns,
-                ["longitude", "siat_longitude", "lon", "lng"],
+                columns, ["longitude", "siat_longitude", "lon", "lng"]
             ),
             format_func=friendly_column_name,
         )
         value_kind = st.radio(
-            "Natureza da coluna de valor",
+            "Natureza do valor",
             ["Valor total", "Valor unitário por m²"],
-            horizontal=False,
         )
 
-if schema_info.notes:
-        st.caption(" ".join(schema_info.notes))
+    with st.expander("Ofertas repetidas", expanded=False):
+        remove_offer_duplicates = st.toggle(
+            "Manter apenas o registro mais recente",
+            value=True,
+        )
+        detected_date = first_existing(
+            original_columns,
+            [
+                "data_encaminhamento",
+                "data_registro",
+                "data_coleta",
+                "data_anuncio",
+                "data",
+            ],
+        )
+        date_options = ["— Não utilizar —"] + original_columns
+        selected_date = st.selectbox(
+            "Data de referência",
+            date_options,
+            index=date_options.index(detected_date) if detected_date else 0,
+        )
+        duplicate_date_column = (
+            None if selected_date == "— Não utilizar —" else selected_date
+        )
+        identifier_candidates = [
+            "anuncio_website",
+            "imobiliaria_codigo_anuncio",
+            "origem_registro",
+            "idf_registro",
+            "id_anuncio",
+            "codigo_anuncio",
+        ]
+        defaults = [
+            column for column in identifier_candidates if column in original_columns
+        ]
+        duplicate_identifier_columns = st.multiselect(
+            "Identificadores, por prioridade",
+            original_columns,
+            default=defaults,
+        )
 
-with st.expander("Tratamento de ofertas repetidas", expanded=False):
-    remove_offer_duplicates = st.toggle(
-        "Remover ofertas repetidas e manter apenas o registro mais recente",
-        value=True,
-        help=(
-            "A deduplicação afeta somente as linhas classificadas como Oferta. "
-            "Guias ITBI não são removidas."
-        ),
-    )
-
-    original_columns = [str(column) for column in original_df.columns]
-    detected_date_column = first_existing(
-        original_columns,
-        [
-            "data_encaminhamento",
-            "data_registro",
-            "data_coleta",
-            "data_anuncio",
-            "data",
-        ],
-    )
-    date_options = ["— Não utilizar —"] + original_columns
-    date_default = (
-        date_options.index(detected_date_column)
-        if detected_date_column in date_options
-        else 0
-    )
-    duplicate_date_column_selected = st.selectbox(
-        "Data usada para escolher o registro mais recente",
-        date_options,
-        index=date_default,
-        help="Na estrutura SIRI, a opção recomendada é data_encaminhamento.",
-    )
-    duplicate_date_column = (
-        None
-        if duplicate_date_column_selected == "— Não utilizar —"
-        else duplicate_date_column_selected
-    )
-
-    identifier_candidates = [
-        "anuncio_website",
-        "imobiliaria_codigo_anuncio",
-        "origem_registro",
-        "id_anuncio",
-        "codigo_anuncio",
-        "url_anuncio",
-    ]
-    detected_identifier_columns = [
-        column
-        for column in identifier_candidates
-        if column in original_columns
-    ]
-    duplicate_identifier_columns = st.multiselect(
-        "Identificadores utilizados, em ordem de prioridade",
-        original_columns,
-        default=detected_identifier_columns,
-        help=(
-            "O aplicativo usa o primeiro identificador preenchido em cada linha. "
-            "Na estrutura SIRI, a URL do anúncio é priorizada e origem_registro "
-            "funciona como alternativa."
-        ),
-    )
-
-    if remove_offer_duplicates:
-        if not duplicate_identifier_columns:
-            st.warning(
-                "Selecione ao menos uma coluna identificadora para aplicar a "
-                "deduplicação."
-            )
-        else:
-            st.caption(
-                "Prioridade atual: "
-                + " → ".join(f"`{column}`" for column in duplicate_identifier_columns)
-            )
-
-if valid_coordinate_fraction(df[col_lat], latitude=True) == 0:
-    st.error(
-        f"A coluna selecionada como latitude (`{col_lat}`) não contém "
-        "coordenadas numéricas válidas."
-    )
-    st.stop()
-if valid_coordinate_fraction(df[col_lon], latitude=False) == 0:
-    st.error(
-        f"A coluna selecionada como longitude (`{col_lon}`) não contém "
-        "coordenadas numéricas válidas."
-    )
-    st.stop()
+    with st.expander("Regularização do KNN", expanded=True):
+        min_k = st.number_input(
+            "K inicial",
+            min_value=3,
+            max_value=30,
+            value=7,
+            step=1,
+        )
+        max_k = st.number_input(
+            "K máximo adaptativo",
+            min_value=int(min_k),
+            max_value=80,
+            value=max(30, int(min_k)),
+            step=1,
+        )
+        min_effective = st.slider(
+            "Mínimo de vizinhos efetivos",
+            min_value=2.0,
+            max_value=15.0,
+            value=5.0,
+            step=0.5,
+        )
+        max_weight = st.slider(
+            "Peso máximo por comparável",
+            min_value=0.10,
+            max_value=0.50,
+            value=0.30,
+            step=0.05,
+        )
+        similarity_weight = st.slider(
+            "Peso das características físicas",
+            min_value=0.55,
+            max_value=0.95,
+            value=0.75,
+            step=0.05,
+        )
+        distance_power = st.slider(
+            "Potência da distância",
+            min_value=0.5,
+            max_value=2.5,
+            value=1.0,
+            step=0.25,
+        )
+        robust_threshold = st.slider(
+            "Limiar robusto — MAD",
+            min_value=1.5,
+            max_value=4.0,
+            value=2.5,
+            step=0.25,
+        )
 
 mapping = ColumnMapping(
     tipo_informacao=col_tipo,
@@ -351,161 +585,118 @@ mapping = ColumnMapping(
 purpose_series = df[col_finalidade].dropna().astype(str).str.strip()
 purposes = sorted(value for value in purpose_series.unique() if value)
 if not purposes:
-    st.error("Não há finalidades válidas na coluna selecionada.")
+    st.error("Não foram encontradas finalidades válidas.")
     st.stop()
 
-st.subheader("2. Imóvel avaliando")
-
-left, middle, right = st.columns(3)
-
-with left:
-    selected_purpose = st.selectbox("Finalidade", purposes)
-    property_mode = st.selectbox(
-        "Tratamento do imóvel",
-        ["Automático", "Territorial", "Construído"],
-        help=(
-            "No modo automático, finalidades com termos como terreno, lote ou "
-            "gleba utilizam a área total do lote."
-        ),
-    )
-
-suggested_territorial = purpose_suggests_territorial(selected_purpose)
-
-with middle:
-    target_area_construida = (
-        st.number_input(
-            "Área construída (m²)",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-        )
-        if col_area_construida
-        else 0.0
-    )
-    target_area_privativa = (
-        st.number_input(
-            "Área privativa (m²)",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-        )
-        if col_area_privativa
-        else 0.0
-    )
-    target_area_lote = (
-        st.number_input(
-            "Área total do lote (m²)",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-        )
-        if col_area_lote
-        else 0.0
-    )
-
-with right:
-    target_lat = st.number_input(
-        "Latitude",
-        min_value=-90.0,
-        max_value=90.0,
-        value=-30.030000,
-        format="%.7f",
-    )
-    target_lon = st.number_input(
-        "Longitude",
-        min_value=-180.0,
-        max_value=180.0,
-        value=-51.230000,
-        format="%.7f",
-    )
-
-has_built_area = target_area_construida > 0 or target_area_privativa > 0
-has_lot_area = target_area_lote > 0
-if property_mode == "Territorial":
-    territorial = True
-elif property_mode == "Construído":
-    territorial = False
-else:
-    territorial = suggested_territorial or (has_lot_area and not has_built_area)
-
-st.caption(
-    "Tratamento efetivo: **territorial**." if territorial
-    else "Tratamento efetivo: **construído**."
+st.markdown(
+    """
+    <div class="section-title">
+        <h2>Imóvel avaliando</h2>
+        <p>Defina a tipologia e as características do imóvel que será estimado.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
-possible_reference_columns = [
-    column
-    for column in [col_area_privativa, col_area_construida, col_area_lote]
-    if column is not None
-]
-if not possible_reference_columns:
-    st.error("Mapeie ao menos uma coluna de área.")
-    st.stop()
+with st.form("valuation_form"):
+    with st.container(border=True):
+        row1 = st.columns([1.2, 1, 1])
+        with row1[0]:
+            selected_purpose = st.selectbox("Finalidade", purposes)
+        suggested_territorial = purpose_suggests_territorial(selected_purpose)
+        with row1[1]:
+            property_mode = st.radio(
+                "Tratamento",
+                ["Territorial", "Unidade construída"],
+                index=0 if suggested_territorial else 1,
+                horizontal=True,
+            )
+        territorial = property_mode == "Territorial"
+        with row1[2]:
+            area_options = [
+                column
+                for column in (
+                    col_area_lote if territorial else None,
+                    col_area_privativa if not territorial else None,
+                    col_area_construida if not territorial else None,
+                )
+                if column
+            ]
+            if not area_options:
+                st.error("Mapeie uma área compatível com o tratamento selecionado.")
+                st.stop()
+            reference_area_column = st.selectbox(
+                "Área de referência do valor",
+                area_options,
+                format_func=friendly_column_name,
+            )
 
-if territorial and col_area_lote in possible_reference_columns:
-    preferred_reference = col_area_lote
-elif col_area_privativa in possible_reference_columns:
-    preferred_reference = col_area_privativa
-elif col_area_construida in possible_reference_columns:
-    preferred_reference = col_area_construida
-else:
-    preferred_reference = possible_reference_columns[0]
+        row2 = st.columns(4)
+        with row2[0]:
+            target_area_lote = (
+                st.number_input(
+                    "Área total do lote (m²)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10.0,
+                )
+                if col_area_lote
+                else 0.0
+            )
+        with row2[1]:
+            target_area_privativa = (
+                st.number_input(
+                    "Área privativa (m²)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                )
+                if col_area_privativa
+                else 0.0
+            )
+        with row2[2]:
+            target_area_construida = (
+                st.number_input(
+                    "Área construída (m²)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                )
+                if col_area_construida
+                else 0.0
+            )
+        with row2[3]:
+            st.markdown('<div class="small-muted">Coordenadas</div>', unsafe_allow_html=True)
+            target_lat = st.number_input(
+                "Latitude",
+                min_value=-90.0,
+                max_value=90.0,
+                value=-30.0300000,
+                format="%.7f",
+            )
+            target_lon = st.number_input(
+                "Longitude",
+                min_value=-180.0,
+                max_value=180.0,
+                value=-51.2300000,
+                format="%.7f",
+            )
 
-reference_area_column = st.selectbox(
-    "Área de referência para converter o valor total em valor unitário",
-    possible_reference_columns,
-    index=possible_reference_columns.index(preferred_reference),
-    format_func=friendly_column_name,
-    key=f"reference_{normalize_text(selected_purpose)}_{property_mode}",
-    help=(
-        "Para terrenos, use a área total do lote. Para unidades construídas, "
-        "use preferencialmente a área privativa ou a área construída."
-    ),
-)
+        calculate = st.form_submit_button(
+            "Calcular estimativa regularizada",
+            type="primary",
+            use_container_width=True,
+        )
 
 purpose_mask = df[col_finalidade].map(normalize_text).eq(
     normalize_text(selected_purpose)
 )
-purpose_types = df.loc[purpose_mask, col_tipo].map(normalize_text)
-n_purpose = int(purpose_mask.sum())
-n_itbi_purpose = int(purpose_types.eq("guia itbi").sum())
-n_offer_purpose = int(purpose_types.eq("oferta").sum())
-n_rent_purpose = int(purpose_types.eq("oferta aluguel").sum())
-
-q1, q2, q3, q4 = st.columns(4)
-q1.metric("Dados da finalidade", n_purpose)
-q2.metric("Guias ITBI", n_itbi_purpose)
-q3.metric("Ofertas", n_offer_purpose)
-q4.metric("Ofertas de aluguel excluídas", n_rent_purpose)
-
-with st.expander("3. Parâmetros do KNN", expanded=True):
-    p1, p2, p3 = st.columns(3)
-    with p1:
-        k = st.number_input(
-            "Número de vizinhos (k)",
-            min_value=1,
-            max_value=50,
-            value=7,
-            step=1,
-        )
-    with p2:
-        similarity_weight = st.slider(
-            "Peso das características físicas",
-            min_value=0.55,
-            max_value=0.95,
-            value=0.75,
-            step=0.05,
-            help="O restante do peso é atribuído à localização.",
-        )
-    with p3:
-        distance_power = st.slider(
-            "Potência do peso por distância",
-            min_value=1.0,
-            max_value=4.0,
-            value=2.0,
-            step=0.5,
-            help="Valores maiores concentram mais peso nos vizinhos mais próximos.",
-        )
+types = df.loc[purpose_mask, col_tipo].map(normalize_text)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Dados da finalidade", int(purpose_mask.sum()))
+c2.metric("Guias ITBI", int(types.eq("guia itbi").sum()))
+c3.metric("Ofertas", int(types.eq("oferta").sum()))
+c4.metric("Aluguéis excluídos", int(types.eq("oferta aluguel").sum()))
 
 target = {
     "area_construida": target_area_construida if target_area_construida > 0 else None,
@@ -514,7 +705,6 @@ target = {
     "latitude": target_lat,
     "longitude": target_lon,
 }
-
 if reference_area_column == col_area_construida:
     target[reference_area_column] = target["area_construida"]
 elif reference_area_column == col_area_privativa:
@@ -522,220 +712,525 @@ elif reference_area_column == col_area_privativa:
 elif reference_area_column == col_area_lote:
     target[reference_area_column] = target["siat_area_total_lote"]
 
-calculate = st.button("Calcular estimativa", type="primary", use_container_width=True)
+if calculate:
+    try:
+        preparation = prepare_data(
+            df=df,
+            mapping=mapping,
+            selected_purpose=selected_purpose,
+            value_kind=value_kind,
+            reference_area_column=reference_area_column,
+            discount_cap=0.20,
+            remove_offer_duplicates=remove_offer_duplicates,
+            duplicate_date_column=duplicate_date_column,
+            duplicate_identifier_columns=tuple(duplicate_identifier_columns),
+        )
+        estimate = estimate_knn(
+            preparation=preparation,
+            mapping=mapping,
+            target=target,
+            reference_area_column=reference_area_column,
+            min_k=int(min_k),
+            max_k=int(max_k),
+            min_effective_neighbors=float(min_effective),
+            similarity_weight=float(similarity_weight),
+            distance_power=float(distance_power),
+            max_individual_weight=float(max_weight),
+            robust_mad_threshold=float(robust_threshold),
+            territorial=territorial,
+        )
+        st.session_state["valuation_run"] = {
+            "preparation": preparation,
+            "estimate": estimate,
+            "mapping": mapping,
+            "target": target,
+            "reference_area_column": reference_area_column,
+            "territorial": territorial,
+            "purpose": selected_purpose,
+            "settings": {
+                "min_k": int(min_k),
+                "max_k": int(max_k),
+                "min_effective": float(min_effective),
+                "similarity_weight": float(similarity_weight),
+                "distance_power": float(distance_power),
+                "max_weight": float(max_weight),
+                "robust_threshold": float(robust_threshold),
+            },
+            "columns": {
+                "tipo": col_tipo,
+                "finalidade": col_finalidade,
+                "valor": col_valor,
+                "area_construida": col_area_construida,
+                "area_privativa": col_area_privativa,
+                "area_lote": col_area_lote,
+                "lat": col_lat,
+                "lon": col_lon,
+                "duplicate_date": duplicate_date_column,
+            },
+        }
+        st.session_state.pop("backtest_run", None)
+    except Exception as exc:
+        st.error(str(exc))
 
-if not calculate:
-    with st.expander("Prévia dos dados"):
-        st.dataframe(original_df.head(50), use_container_width=True)
+run = st.session_state.get("valuation_run")
+if run is None:
+    st.markdown(
+        """
+        <div class="inline-note">
+            A estimativa será apresentada aqui após o cálculo. O K crescerá
+            automaticamente até atingir o número efetivo de vizinhos definido
+            na barra lateral ou até chegar ao limite máximo.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.stop()
 
-try:
-    preparation = prepare_data(
-        df=df,
-        mapping=mapping,
-        selected_purpose=selected_purpose,
-        value_kind=value_kind,
-        reference_area_column=reference_area_column,
-        discount_cap=0.20,
-        remove_offer_duplicates=remove_offer_duplicates,
-        duplicate_date_column=duplicate_date_column,
-        duplicate_identifier_columns=tuple(duplicate_identifier_columns),
-    )
-    estimate = estimate_knn(
-        preparation=preparation,
-        mapping=mapping,
-        target=target,
-        reference_area_column=reference_area_column,
-        k=int(k),
-        similarity_weight=float(similarity_weight),
-        distance_power=float(distance_power),
-        territorial=territorial,
-    )
-except Exception as exc:
-    st.error(str(exc))
-    st.stop()
+preparation: PreparationResult = run["preparation"]
+estimate: EstimateResult = run["estimate"]
+settings = run["settings"]
+run_columns = run["columns"]
 
-st.subheader("Resultado")
+st.markdown(
+    """
+    <div class="section-title">
+        <h2>Resultado consolidado</h2>
+        <p>Valor central, regularização aplicada e leitura da confiabilidade.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Valor total estimado", money_br(estimate.estimated_total_value))
-m2.metric(
-    "Valor unitário estimado",
+r1, r2, r3, r4 = st.columns(4)
+r1.metric("Valor total estimado", money_br(estimate.estimated_total_value))
+r2.metric(
+    "Valor unitário robusto",
     f"{money_br(estimate.estimated_unit_value)}/m²",
 )
-m3.metric("Desconto aplicado às ofertas", f"{preparation.discount:.1%}")
-m4.metric(
-    "Vizinhos efetivos",
-    number_br(estimate.effective_neighbors, 2),
-    help="Cai quando um ou poucos vizinhos concentram grande parte do peso.",
+r3.metric(
+    "K adaptativo utilizado",
+    str(estimate.diagnostics["k_used"]),
+    delta=(
+        f"{estimate.effective_neighbors:.1f} vizinhos efetivos"
+    ),
+    delta_color="off",
+)
+r4.metric(
+    "Maior peso individual",
+    percent_br(estimate.diagnostics["max_weight_observed"]),
+    delta=f"teto: {percent_br(settings['max_weight'])}",
+    delta_color="off",
 )
 
-if estimate.estimated_unit_value > 0:
-    dispersion_pct = estimate.weighted_std_unit / estimate.estimated_unit_value
-else:
-    dispersion_pct = np.nan
-
-st.caption(
-    f"Desvio ponderado entre os vizinhos: "
-    f"{money_br(estimate.weighted_std_unit)}/m² "
-    f"({dispersion_pct:.1%} da estimativa). "
-    "Esse indicador mede dispersão dos comparáveis; não é intervalo de confiança."
+tabs = st.tabs(
+    [
+        "Resumo executivo",
+        "Comparáveis",
+        "Diagnóstico",
+        "Backtesting",
+    ]
 )
 
-duplicates_removed = int(
-    preparation.diagnostics.get("offer_duplicates_removed", 0)
-)
-duplicate_groups = int(
-    preparation.diagnostics.get("offer_duplicate_groups", 0)
-)
-if preparation.diagnostics.get("offer_deduplication_enabled"):
-    st.info(
-        f"Deduplicação: **{duplicates_removed}** registro(s) repetido(s) "
-        f"removido(s), distribuídos em **{duplicate_groups}** grupo(s) de "
-        "ofertas. Em cada grupo foi mantido o registro mais recente."
-    )
-
-deduplication_warning = preparation.diagnostics.get("deduplication_warning")
-if deduplication_warning:
-    st.warning(deduplication_warning)
-
-warning = preparation.diagnostics.get("discount_warning")
-if warning:
-    st.warning(warning)
-
-coverage = estimate.diagnostics.get("feature_coverage", {})
-for feature_name, stats in coverage.items():
-    nearest_gap = float(stats.get("nearest_relative_difference", 0.0))
-    if nearest_gap > 0.30:
-        st.warning(
-            f"Baixa aderência em `{friendly_column_name(feature_name)}`: o dado "
-            f"mais próximo difere {nearest_gap:.1%} do avaliando. Os vizinhos "
-            f"selecionados variam de {number_br(stats['selected_min'])} a "
-            f"{number_br(stats['selected_max'])}, enquanto o avaliando possui "
-            f"{number_br(stats['target'])}. A estimativa deve ser tratada como "
-            "extrapolação ou interpolação em lacuna amostral."
+with tabs[0]:
+    left, right = st.columns([1.45, 1])
+    with left:
+        with st.container(border=True):
+            st.markdown("#### Leitura do resultado")
+            dispersion = (
+                estimate.weighted_std_unit / estimate.estimated_unit_value
+                if estimate.estimated_unit_value > 0
+                else np.nan
+            )
+            st.write(
+                f"A estimativa utilizou **{estimate.diagnostics['k_used']}** "
+                f"comparáveis, equivalentes a **{estimate.effective_neighbors:.2f}** "
+                "vizinhos efetivos após limitar a influência individual."
+            )
+            st.write(
+                f"A dispersão robusta foi de **{money_br(estimate.weighted_std_unit)}/m²** "
+                f"({percent_br(dispersion)} do valor estimado)."
+            )
+            adjusted_count = estimate.diagnostics["robust_adjusted_count"]
+            adjusted_weight = estimate.diagnostics["robust_adjusted_weight"]
+            st.write(
+                f"O tratamento por MAD ajustou **{adjusted_count}** valor(es), "
+                f"correspondentes a **{percent_br(adjusted_weight)}** do peso total."
+            )
+            st.progress(estimate.diagnostics["confidence_score"] / 100)
+            st.caption(
+                "A pontuação sintetiza aderência em área, distância, número "
+                "efetivo de vizinhos e intensidade do tratamento robusto."
+            )
+    with right:
+        risk_card(
+            estimate.diagnostics["risk_level"],
+            estimate.diagnostics["confidence_score"],
+            estimate.diagnostics["risk_reasons"],
         )
 
-st.write(
-    f"Foram considerados **{estimate.diagnostics['n_candidates']}** candidatos "
-    f"válidos e selecionados **{estimate.diagnostics['k_used']}** vizinhos. "
-    f"Peso físico: **{similarity_weight:.0%}**; peso geográfico: "
-    f"**{1 - similarity_weight:.0%}**."
-)
-
-neighbors = estimate.neighbors.copy()
-display_columns = [
-    "_row_excel",
-    col_tipo,
-    col_finalidade,
-    col_valor,
-    reference_area_column,
-]
-display_columns += [
-    column
-    for column in [
-        duplicate_date_column,
-        "_fonte_chave_oferta",
-        "_chave_oferta_deduplicacao",
-        "_data_registro_deduplicacao",
+    st.markdown("#### Distribuição dos comparáveis")
+    chart_df = estimate.neighbors[
+        ["_valor_unitario_ajustado", "_valor_unitario_robusto"]
+    ].copy()
+    chart_df.index = [
+        f"Vizinho {i + 1}" for i in range(len(chart_df))
     ]
-    if column
-]
-display_columns += [
-    column
-    for column in [
-        col_area_construida,
-        col_area_privativa,
-        col_area_lote,
-        col_lat,
-        col_lon,
+    chart_df.columns = ["Valor ajustado", "Valor após tratamento robusto"]
+    st.bar_chart(chart_df)
+
+    dedup_removed = preparation.diagnostics.get("offer_duplicates_removed", 0)
+    if preparation.diagnostics.get("offer_deduplication_enabled"):
+        st.info(
+            f"Foram removidos {dedup_removed} registros repetidos de ofertas "
+            "antes do cálculo do desconto e da seleção dos comparáveis."
+        )
+    if preparation.diagnostics.get("discount_warning"):
+        st.warning(preparation.diagnostics["discount_warning"])
+
+with tabs[1]:
+    neighbors = estimate.neighbors.copy()
+    display_columns = [
+        "_row_excel",
+        run_columns["tipo"],
+        run_columns["finalidade"],
+        run_columns["valor"],
+        run["reference_area_column"],
     ]
-    if column and column not in display_columns
-]
-display_columns += [
-    "_valor_unitario_original",
-    "_valor_unitario_ajustado",
-    "_distancia_caracteristicas",
-    "_distancia_geografica_km",
-    "_distancia_composta",
-    "_peso_knn",
-    "_contribuicao_valor_unitario",
-]
-display_columns = [column for column in display_columns if column in neighbors.columns]
+    display_columns += [
+        column
+        for column in [
+            run_columns["duplicate_date"],
+            run_columns["area_construida"],
+            run_columns["area_privativa"],
+            run_columns["area_lote"],
+            run_columns["lat"],
+            run_columns["lon"],
+        ]
+        if column and column not in display_columns
+    ]
+    display_columns += [
+        "_valor_unitario_original",
+        "_valor_unitario_ajustado",
+        "_valor_unitario_robusto",
+        "_ajuste_robusto",
+        "_distancia_caracteristicas",
+        "_distancia_geografica_km",
+        "_distancia_composta",
+        "_peso_knn",
+        "_contribuicao_valor_unitario",
+    ]
+    display_columns = [
+        column for column in display_columns if column in neighbors.columns
+    ]
+    rename = {
+        "_row_excel": "linha_excel",
+        "_valor_unitario_original": "valor_unitario_original",
+        "_valor_unitario_ajustado": "valor_unitario_ajustado",
+        "_valor_unitario_robusto": "valor_unitario_robusto",
+        "_ajuste_robusto": "ajuste_robusto",
+        "_distancia_caracteristicas": "distancia_caracteristicas",
+        "_distancia_geografica_km": "distancia_geografica_km",
+        "_distancia_composta": "distancia_composta",
+        "_peso_knn": "peso_knn",
+        "_contribuicao_valor_unitario": "contribuicao_valor_unitario",
+    }
+    neighbors_display = (
+        neighbors[display_columns]
+        .rename(columns=rename)
+        .sort_values("peso_knn", ascending=False)
+    )
 
-rename = {
-    "_row_excel": "linha_excel",
-    "_valor_unitario_original": "valor_unitario_original",
-    "_valor_unitario_ajustado": "valor_unitario_ajustado",
-    "_distancia_caracteristicas": "distancia_caracteristicas",
-    "_distancia_geografica_km": "distancia_geografica_km",
-    "_distancia_composta": "distancia_composta",
-    "_peso_knn": "peso_knn",
-    "_contribuicao_valor_unitario": "contribuicao_valor_unitario",
-}
-neighbors_display = neighbors[display_columns].rename(columns=rename)
-neighbors_display = neighbors_display.sort_values("peso_knn", ascending=False)
+    st.dataframe(
+        neighbors_display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "peso_knn": st.column_config.NumberColumn(format="%.2f%%"),
+            "distancia_geografica_km": st.column_config.NumberColumn(
+                format="%.3f km"
+            ),
+            "valor_unitario_original": st.column_config.NumberColumn(
+                format="R$ %.2f"
+            ),
+            "valor_unitario_ajustado": st.column_config.NumberColumn(
+                format="R$ %.2f"
+            ),
+            "valor_unitario_robusto": st.column_config.NumberColumn(
+                format="R$ %.2f"
+            ),
+            "ajuste_robusto": st.column_config.NumberColumn(format="R$ %.2f"),
+        },
+    )
 
-st.subheader("Comparáveis selecionados")
-st.dataframe(
-    neighbors_display,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "peso_knn": st.column_config.NumberColumn(format="%.2%%"),
-        "distancia_geografica_km": st.column_config.NumberColumn(format="%.3f km"),
-        "distancia_caracteristicas": st.column_config.NumberColumn(format="%.3f"),
-        "distancia_composta": st.column_config.NumberColumn(format="%.3f"),
-        "valor_unitario_original": st.column_config.NumberColumn(format="R$ %.2f"),
-        "valor_unitario_ajustado": st.column_config.NumberColumn(format="R$ %.2f"),
-        "contribuicao_valor_unitario": st.column_config.NumberColumn(format="R$ %.2f"),
-    },
-)
+    map_df = neighbors[
+        [run_columns["lat"], run_columns["lon"]]
+    ].rename(
+        columns={
+            run_columns["lat"]: "latitude",
+            run_columns["lon"]: "longitude",
+        }
+    )
+    target_map = pd.DataFrame(
+        [
+            {
+                "latitude": run["target"]["latitude"],
+                "longitude": run["target"]["longitude"],
+            }
+        ]
+    )
+    st.map(pd.concat([target_map, map_df], ignore_index=True))
 
-map_df = neighbors[[col_lat, col_lon]].rename(
-    columns={col_lat: "latitude", col_lon: "longitude"}
-)
-target_map = pd.DataFrame(
-    [{"latitude": target_lat, "longitude": target_lon}]
-)
-st.subheader("Localização dos vizinhos")
-st.map(pd.concat([target_map, map_df], ignore_index=True))
+with tabs[2]:
+    d1, d2, d3 = st.columns(3)
+    d1.metric(
+        "Vizinhos efetivos",
+        number_br(estimate.effective_neighbors, 2),
+        delta=f"objetivo: {number_br(settings['min_effective'], 1)}",
+        delta_color="off",
+    )
+    d2.metric(
+        "Desconto das ofertas",
+        percent_br(preparation.discount),
+        delta="mediana de razões pareadas",
+        delta_color="off",
+    )
+    d3.metric(
+        "Candidatos válidos",
+        str(estimate.diagnostics["n_candidates"]),
+        delta=run["purpose"],
+        delta_color="off",
+    )
 
-diagnostics = {
+    risk_reasons = estimate.diagnostics["risk_reasons"]
+    if risk_reasons:
+        for reason in risk_reasons:
+            st.warning(reason)
+    else:
+        st.success("Não foram detectados sinais relevantes de extrapolação.")
+
+    st.markdown("#### Cobertura das características")
+    coverage_rows = []
+    for feature, stats in estimate.diagnostics["feature_coverage"].items():
+        coverage_rows.append(
+            {
+                "caracteristica": friendly_column_name(feature),
+                "avaliando": stats["target"],
+                "minimo_amostra": stats["candidate_min"],
+                "maximo_amostra": stats["candidate_max"],
+                "minimo_vizinhos": stats["selected_min"],
+                "maximo_vizinhos": stats["selected_max"],
+                "diferenca_mais_proxima": stats["nearest_relative_difference"],
+                "fora_da_faixa": stats["outside_candidate_range"],
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(coverage_rows),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "diferenca_mais_proxima": st.column_config.NumberColumn(
+                format="%.2f%%"
+            )
+        },
+    )
+
+    with st.expander("Parâmetros e rastreabilidade"):
+        diagnostics_df = pd.DataFrame(
+            [
+                {"indicador": key, "valor": str(value)}
+                for key, value in {
+                    **preparation.diagnostics,
+                    **estimate.diagnostics,
+                }.items()
+                if key not in {"feature_coverage", "risk_reasons"}
+            ]
+        )
+        st.dataframe(diagnostics_df, use_container_width=True, hide_index=True)
+
+with tabs[3]:
+    st.markdown("#### Validação fora da própria observação")
+    st.caption(
+        "Cada imóvel testado é removido da base. Quando uma coluna de grupo é "
+        "informada, todos os registros do mesmo imóvel também são excluídos."
+    )
+
+    bt1, bt2, bt3 = st.columns(3)
+    with bt1:
+        backtest_scope_label = st.selectbox(
+            "Conjunto de avaliação",
+            ["Guias ITBI — recomendado", "Todos os dados ajustados"],
+        )
+        evaluation_scope = (
+            "itbi"
+            if backtest_scope_label.startswith("Guias")
+            else "all"
+        )
+    with bt2:
+        group_candidates = ["— Apenas a própria linha —"] + original_columns
+        default_group = first_existing(
+            original_columns,
+            [
+                "siat_inscricao",
+                "inscricao",
+                "num_inscricao",
+                "siat_lote_fiscal",
+            ],
+        )
+        group_column_selected = st.selectbox(
+            "Agrupar e excluir o mesmo imóvel",
+            group_candidates,
+            index=(
+                group_candidates.index(default_group)
+                if default_group in group_candidates
+                else 0
+            ),
+        )
+        group_column = (
+            None
+            if group_column_selected == "— Apenas a própria linha —"
+            else group_column_selected
+        )
+    with bt3:
+        sample_size = st.slider(
+            "Observações testadas",
+            min_value=30,
+            max_value=300,
+            value=120,
+            step=10,
+        )
+
+    run_backtest = st.button(
+        "Executar backtesting",
+        type="primary",
+        use_container_width=True,
+    )
+    if run_backtest:
+        with st.spinner(
+            "Executando validação com exclusão do imóvel avaliado..."
+        ):
+            try:
+                result = backtest_knn(
+                    preparation=preparation,
+                    mapping=run["mapping"],
+                    reference_area_column=run["reference_area_column"],
+                    territorial=run["territorial"],
+                    min_k=settings["min_k"],
+                    max_k=settings["max_k"],
+                    min_effective_neighbors=settings["min_effective"],
+                    similarity_weight=settings["similarity_weight"],
+                    distance_power=settings["distance_power"],
+                    max_individual_weight=settings["max_weight"],
+                    robust_mad_threshold=settings["robust_threshold"],
+                    sample_size=sample_size,
+                    group_column=group_column,
+                    evaluation_scope=evaluation_scope,
+                    random_state=42,
+                )
+                st.session_state["backtest_run"] = result
+            except Exception as exc:
+                st.error(str(exc))
+
+    backtest_result: BacktestResult | None = st.session_state.get("backtest_run")
+    if backtest_result is not None:
+        metrics = backtest_result.metrics
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Mediana do erro absoluto", money_br(metrics["medae_unit"]) + "/m²")
+        b2.metric("MdAPE", percent_br(metrics["mdape"]))
+        b3.metric("R²", number_br(metrics["r2"], 3))
+        b4.metric("P90 do erro percentual", percent_br(metrics["p90_ape"]))
+
+        b5, b6, b7, b8 = st.columns(4)
+        b5.metric("MAE", money_br(metrics["mae_unit"]) + "/m²")
+        b6.metric("RMSE", money_br(metrics["rmse_unit"]) + "/m²")
+        b7.metric("COD", number_br(metrics["cod"], 2) + "%")
+        b8.metric("PRD", number_br(metrics["prd"], 3))
+
+        scatter = backtest_result.predictions[
+            ["valor_unitario_real", "valor_unitario_estimado"]
+        ].rename(
+            columns={
+                "valor_unitario_real": "Valor real",
+                "valor_unitario_estimado": "Valor estimado",
+            }
+        )
+        st.scatter_chart(
+            scatter,
+            x="Valor real",
+            y="Valor estimado",
+        )
+
+        error_distribution = (
+            backtest_result.predictions["erro_percentual_absoluto"]
+            .mul(100)
+            .sort_values()
+            .reset_index(drop=True)
+            .to_frame("Erro percentual absoluto (%)")
+        )
+        st.line_chart(error_distribution)
+
+        st.dataframe(
+            backtest_result.predictions,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "erro_percentual": st.column_config.NumberColumn(format="%.2f%%"),
+                "erro_percentual_absoluto": st.column_config.NumberColumn(
+                    format="%.2f%%"
+                ),
+                "peso_maximo": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+        )
+    else:
+        st.markdown(
+            """
+            <div class="inline-note">
+                O backtesting é executado sob demanda porque repete a estimativa
+                para cada observação escolhida. Use Guias ITBI como conjunto de
+                avaliação para medir a capacidade de aproximar transações.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+backtest_result = st.session_state.get("backtest_run")
+diagnostics_export = {
     "valor_total_estimado": estimate.estimated_total_value,
     "valor_unitario_estimado": estimate.estimated_unit_value,
-    "desvio_ponderado_unitario": estimate.weighted_std_unit,
-    "desconto_ofertas": preparation.discount,
-    "finalidade": selected_purpose,
-    "tratamento_territorial": territorial,
-    "area_referencia": reference_area_column,
-    "caracteristicas_ativas": ", ".join(estimate.active_features),
+    "finalidade": run["purpose"],
+    "area_referencia": run["reference_area_column"],
     **preparation.diagnostics,
     **estimate.diagnostics,
 }
-
-excel_bytes = dataframe_to_excel(neighbors_display, diagnostics)
+export_neighbors = estimate.neighbors.copy()
+excel_bytes = dataframe_to_excel(
+    export_neighbors,
+    diagnostics_export,
+    backtest_result,
+)
 st.download_button(
-    "Baixar comparáveis e diagnósticos em Excel",
+    "Baixar resultado completo em Excel",
     data=excel_bytes,
-    file_name="resultado_avaliacao_knn.xlsx",
+    file_name="avaliacao_knn_v6.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     use_container_width=True,
 )
 
-with st.expander("Como o cálculo foi feito"):
+with st.expander("Metodologia da versão 6"):
     st.markdown(
         """
-1. Filtra a finalidade informada.
-2. Mantém apenas `Guia ITBI` e `Oferta`; `Oferta aluguel` é descartada.
-3. Converte os valores para R$/m² pela área de referência.
-4. Calcula, em quantis pareados, a mediana de
-   `1 - VU_ITBI / VU_Oferta`, limita o resultado a 20% e aplica o desconto
-   somente às ofertas.
-5. Normaliza as áreas por mediana e intervalo interquartil.
-6. Combina distância física e distância geográfica, com maior peso padrão
-   para as características do imóvel.
-7. Seleciona os `k` vizinhos e calcula a média ponderada pelo inverso da
-   distância composta.
+1. Filtra a finalidade e exclui ofertas de aluguel.
+2. Deduplica ofertas, preservando somente a coleta mais recente.
+3. Ajusta as ofertas pela mediana das razões em quantis pareados com ITBI,
+   limitada a 20%.
+4. Normaliza as áreas por estatísticas robustas.
+5. Inicia no K escolhido e aumenta o conjunto até alcançar o número efetivo
+   de vizinhos ou o K máximo.
+6. Limita o peso individual e redistribui o excedente.
+7. Winsoriza valores unitários extremos por mediana e MAD antes da média
+   ponderada.
+8. Classifica extrapolação por cobertura de área, localização, concentração
+   de pesos e intensidade do tratamento robusto.
+9. No backtesting, exclui a própria observação e, quando configurado, todos os
+   registros do mesmo imóvel.
         """
     )
