@@ -153,6 +153,155 @@ def estimate_offer_discount(
     return discount, diagnostics
 
 
+
+def _parse_registration_dates(series: pd.Series) -> pd.Series:
+    """
+    Converte datas textuais ou seriais do Excel.
+
+    A prioridade é o padrão brasileiro dia/mês/ano. Valores numéricos
+    plausíveis são interpretados como datas seriais do Excel.
+    """
+    parsed = pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    serial_mask = parsed.isna() & numeric.between(1, 100000)
+    if serial_mask.any():
+        parsed.loc[serial_mask] = pd.to_datetime(
+            numeric.loc[serial_mask],
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce",
+        )
+    return parsed
+
+
+def deduplicate_offers(
+    data: pd.DataFrame,
+    date_column: str | None,
+    identifier_columns: Iterable[str],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Remove repetições da mesma oferta, mantendo a observação mais recente.
+
+    A chave é formada pelo primeiro identificador não vazio disponível, na
+    ordem informada. Exemplos adequados: URL do anúncio, código do anúncio e
+    origem do registro. Guias ITBI não são deduplicadas por esta função.
+    """
+    diagnostics: dict[str, Any] = {
+        "offer_deduplication_enabled": True,
+        "offer_duplicates_removed": 0,
+        "offer_duplicate_groups": 0,
+        "offer_rows_without_identifier": 0,
+        "offer_rows_without_valid_date": 0,
+        "offer_deduplication_date_column": date_column or "",
+        "offer_deduplication_identifier_columns": "",
+    }
+
+    usable_identifier_columns = [
+        column
+        for column in identifier_columns
+        if column and column in data.columns
+    ]
+    diagnostics["offer_deduplication_identifier_columns"] = ", ".join(
+        usable_identifier_columns
+    )
+
+    if not usable_identifier_columns:
+        diagnostics["deduplication_warning"] = (
+            "A deduplicação não foi aplicada porque nenhuma coluna "
+            "identificadora do anúncio foi encontrada."
+        )
+        return data, diagnostics
+
+    offer_mask = data["_tipo_norm"].eq(TIPO_OFERTA)
+    offers = data.loc[offer_mask].copy()
+    if offers.empty:
+        return data, diagnostics
+
+    duplicate_key = pd.Series("", index=offers.index, dtype="string")
+    source_column = pd.Series("", index=offers.index, dtype="string")
+
+    ignored_identifiers = {"", "transacao", "transação", "nan", "none", "<na>"}
+    for column in usable_identifier_columns:
+        normalized = offers[column].map(normalize_text).astype("string")
+        valid = ~normalized.isin(ignored_identifiers)
+        fill_mask = duplicate_key.eq("") & valid
+        duplicate_key.loc[fill_mask] = (
+            normalize_text(column) + "::" + normalized.loc[fill_mask]
+        )
+        source_column.loc[fill_mask] = column
+
+    offers["_chave_oferta_deduplicacao"] = duplicate_key
+    offers["_fonte_chave_oferta"] = source_column
+
+    without_identifier = duplicate_key.eq("")
+    diagnostics["offer_rows_without_identifier"] = int(without_identifier.sum())
+
+    candidates = offers.loc[~without_identifier].copy()
+    if candidates.empty:
+        diagnostics["deduplication_warning"] = (
+            "A deduplicação não foi aplicada porque os identificadores das "
+            "ofertas estão vazios."
+        )
+        return data, diagnostics
+
+    if date_column and date_column in candidates.columns:
+        candidates["_data_registro_deduplicacao"] = _parse_registration_dates(
+            candidates[date_column]
+        )
+    else:
+        candidates["_data_registro_deduplicacao"] = pd.NaT
+        diagnostics["deduplication_warning"] = (
+            "A coluna de data não foi encontrada. Em empates, foi mantida a "
+            "última linha existente no arquivo."
+        )
+
+    diagnostics["offer_rows_without_valid_date"] = int(
+        candidates["_data_registro_deduplicacao"].isna().sum()
+    )
+
+    # NaT fica antes das datas válidas; keep='last' preserva a data mais recente.
+    # A linha do Excel é o critério final de desempate para ocorrências na mesma data.
+    candidates = candidates.sort_values(
+        [
+            "_chave_oferta_deduplicacao",
+            "_data_registro_deduplicacao",
+            "_row_excel",
+        ],
+        ascending=[True, True, True],
+        na_position="first",
+        kind="mergesort",
+    )
+
+    group_sizes = candidates.groupby(
+        "_chave_oferta_deduplicacao",
+        dropna=False,
+    ).size()
+    diagnostics["offer_duplicate_groups"] = int((group_sizes > 1).sum())
+
+    duplicated = candidates.duplicated(
+        subset=["_chave_oferta_deduplicacao"],
+        keep="last",
+    )
+    indices_to_remove = candidates.index[duplicated]
+    diagnostics["offer_duplicates_removed"] = int(len(indices_to_remove))
+
+    cleaned = data.drop(index=indices_to_remove).copy()
+
+    # Preserva metadados nas ofertas mantidas para auditoria e exportação.
+    kept_metadata = candidates.loc[
+        ~duplicated,
+        [
+            "_chave_oferta_deduplicacao",
+            "_fonte_chave_oferta",
+            "_data_registro_deduplicacao",
+        ],
+    ]
+    for column in kept_metadata.columns:
+        cleaned.loc[kept_metadata.index, column] = kept_metadata[column]
+
+    return cleaned, diagnostics
+
 def validate_mapping(df: pd.DataFrame, mapping: ColumnMapping) -> None:
     required = [
         mapping.tipo_informacao,
@@ -184,6 +333,9 @@ def prepare_data(
     value_kind: str,
     reference_area_column: str,
     discount_cap: float = 0.20,
+    remove_offer_duplicates: bool = True,
+    duplicate_date_column: str | None = None,
+    duplicate_identifier_columns: Iterable[str] = (),
 ) -> PreparationResult:
     validate_mapping(df, mapping)
 
@@ -200,6 +352,20 @@ def prepare_data(
 
     # Desconsidera aluguel e quaisquer categorias não previstas.
     data = data.loc[data["_tipo_norm"].isin([TIPO_ITBI, TIPO_OFERTA])].copy()
+
+    deduplication_diagnostics: dict[str, Any] = {
+        "offer_deduplication_enabled": bool(remove_offer_duplicates),
+        "offer_duplicates_removed": 0,
+        "offer_duplicate_groups": 0,
+        "offer_rows_without_identifier": 0,
+        "offer_rows_without_valid_date": 0,
+    }
+    if remove_offer_duplicates:
+        data, deduplication_diagnostics = deduplicate_offers(
+            data=data,
+            date_column=duplicate_date_column,
+            identifier_columns=duplicate_identifier_columns,
+        )
 
     numeric_columns = {
         mapping.valor,
@@ -255,6 +421,7 @@ def prepare_data(
 
     diagnostics = {
         **discount_diagnostics,
+        **deduplication_diagnostics,
         "purpose": selected_purpose,
         "n_filtered": int(len(data)),
         "n_itbi": int(data["_tipo_norm"].eq(TIPO_ITBI).sum()),

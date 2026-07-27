@@ -18,6 +18,7 @@ from schema_utils import (
     DERIVED_AREA_LOTE,
     DERIVED_AREA_PRIVATIVA,
     enrich_known_schemas,
+    first_existing,
     friendly_column_name,
 )
 
@@ -245,8 +246,83 @@ with st.expander("1. Mapeamento das colunas", expanded=True):
             horizontal=False,
         )
 
-    if schema_info.notes:
+if schema_info.notes:
         st.caption(" ".join(schema_info.notes))
+
+with st.expander("Tratamento de ofertas repetidas", expanded=False):
+    remove_offer_duplicates = st.toggle(
+        "Remover ofertas repetidas e manter apenas o registro mais recente",
+        value=True,
+        help=(
+            "A deduplicação afeta somente as linhas classificadas como Oferta. "
+            "Guias ITBI não são removidas."
+        ),
+    )
+
+    original_columns = [str(column) for column in original_df.columns]
+    detected_date_column = first_existing(
+        original_columns,
+        [
+            "data_encaminhamento",
+            "data_registro",
+            "data_coleta",
+            "data_anuncio",
+            "data",
+        ],
+    )
+    date_options = ["— Não utilizar —"] + original_columns
+    date_default = (
+        date_options.index(detected_date_column)
+        if detected_date_column in date_options
+        else 0
+    )
+    duplicate_date_column_selected = st.selectbox(
+        "Data usada para escolher o registro mais recente",
+        date_options,
+        index=date_default,
+        help="Na estrutura SIRI, a opção recomendada é data_encaminhamento.",
+    )
+    duplicate_date_column = (
+        None
+        if duplicate_date_column_selected == "— Não utilizar —"
+        else duplicate_date_column_selected
+    )
+
+    identifier_candidates = [
+        "anuncio_website",
+        "imobiliaria_codigo_anuncio",
+        "origem_registro",
+        "id_anuncio",
+        "codigo_anuncio",
+        "url_anuncio",
+    ]
+    detected_identifier_columns = [
+        column
+        for column in identifier_candidates
+        if column in original_columns
+    ]
+    duplicate_identifier_columns = st.multiselect(
+        "Identificadores utilizados, em ordem de prioridade",
+        original_columns,
+        default=detected_identifier_columns,
+        help=(
+            "O aplicativo usa o primeiro identificador preenchido em cada linha. "
+            "Na estrutura SIRI, a URL do anúncio é priorizada e origem_registro "
+            "funciona como alternativa."
+        ),
+    )
+
+    if remove_offer_duplicates:
+        if not duplicate_identifier_columns:
+            st.warning(
+                "Selecione ao menos uma coluna identificadora para aplicar a "
+                "deduplicação."
+            )
+        else:
+            st.caption(
+                "Prioridade atual: "
+                + " → ".join(f"`{column}`" for column in duplicate_identifier_columns)
+            )
 
 if valid_coordinate_fraction(df[col_lat], latitude=True) == 0:
     st.error(
@@ -461,6 +537,9 @@ try:
         value_kind=value_kind,
         reference_area_column=reference_area_column,
         discount_cap=0.20,
+        remove_offer_duplicates=remove_offer_duplicates,
+        duplicate_date_column=duplicate_date_column,
+        duplicate_identifier_columns=tuple(duplicate_identifier_columns),
     )
     estimate = estimate_knn(
         preparation=preparation,
@@ -503,6 +582,23 @@ st.caption(
     "Esse indicador mede dispersão dos comparáveis; não é intervalo de confiança."
 )
 
+duplicates_removed = int(
+    preparation.diagnostics.get("offer_duplicates_removed", 0)
+)
+duplicate_groups = int(
+    preparation.diagnostics.get("offer_duplicate_groups", 0)
+)
+if preparation.diagnostics.get("offer_deduplication_enabled"):
+    st.info(
+        f"Deduplicação: **{duplicates_removed}** registro(s) repetido(s) "
+        f"removido(s), distribuídos em **{duplicate_groups}** grupo(s) de "
+        "ofertas. Em cada grupo foi mantido o registro mais recente."
+    )
+
+deduplication_warning = preparation.diagnostics.get("deduplication_warning")
+if deduplication_warning:
+    st.warning(deduplication_warning)
+
 warning = preparation.diagnostics.get("discount_warning")
 if warning:
     st.warning(warning)
@@ -534,6 +630,16 @@ display_columns = [
     col_finalidade,
     col_valor,
     reference_area_column,
+]
+display_columns += [
+    column
+    for column in [
+        duplicate_date_column,
+        "_fonte_chave_oferta",
+        "_chave_oferta_deduplicacao",
+        "_data_registro_deduplicacao",
+    ]
+    if column
 ]
 display_columns += [
     column
