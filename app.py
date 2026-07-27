@@ -8,33 +8,97 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from knn_valuation import (
-    BacktestResult,
-    ColumnMapping,
-    EstimateResult,
-    PreparationResult,
-    backtest_knn,
-    estimate_knn,
-    normalize_text,
-    prepare_data,
-)
-from schema_utils import (
-    DERIVED_AREA_CONSTRUIDA,
-    DERIVED_AREA_LOTE,
-    DERIVED_AREA_PRIVATIVA,
-    DERIVED_TESTADA,
-    enrich_known_schemas,
-    first_existing,
-    friendly_column_name,
-)
-
-
 st.set_page_config(
     page_title="KNN Valuation Studio",
     page_icon="◆",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+try:
+    import knn_valuation as _knn
+    import schema_utils as _schema
+except Exception as exc:
+    st.error(
+        "Não foi possível carregar os módulos internos do aplicativo. "
+        "Substitua no repositório os arquivos app.py, knn_valuation.py e "
+        "schema_utils.py pelo mesmo pacote da versão 6.1.1."
+    )
+    st.code(f"{type(exc).__name__}: {exc}")
+    st.stop()
+
+_required_knn = {
+    "BacktestResult",
+    "ColumnMapping",
+    "EstimateResult",
+    "PreparationResult",
+    "backtest_knn",
+    "estimate_knn",
+    "normalize_text",
+    "prepare_data",
+}
+_required_schema = {
+    "DERIVED_AREA_CONSTRUIDA",
+    "DERIVED_AREA_LOTE",
+    "DERIVED_AREA_PRIVATIVA",
+    "DERIVED_TESTADA",
+    "enrich_known_schemas",
+    "first_existing",
+    "friendly_column_name",
+}
+
+_missing_knn = sorted(name for name in _required_knn if not hasattr(_knn, name))
+_missing_schema = sorted(
+    name for name in _required_schema if not hasattr(_schema, name)
+)
+
+_knn_version = getattr(_knn, "MODULE_API_VERSION", "anterior")
+_schema_version = getattr(_schema, "MODULE_API_VERSION", "anterior")
+
+if (
+    _missing_knn
+    or _missing_schema
+    or _knn_version != "6.1.1"
+    or _schema_version != "6.1.1"
+):
+    st.error("Os arquivos publicados pertencem a versões diferentes.")
+    st.markdown(
+        """
+        O `app.py` da versão 6.1.1 precisa ser publicado junto com os arquivos
+        `knn_valuation.py` e `schema_utils.py` fornecidos no mesmo pacote.
+        Substitua os três arquivos no GitHub, confirme o commit e reinicie o app.
+        """
+    )
+    st.code(
+        "\n".join(
+            [
+                f"knn_valuation.py: versão {_knn_version}",
+                f"schema_utils.py: versão {_schema_version}",
+                "Itens ausentes no KNN: "
+                + (", ".join(_missing_knn) if _missing_knn else "nenhum"),
+                "Itens ausentes no schema: "
+                + (", ".join(_missing_schema) if _missing_schema else "nenhum"),
+            ]
+        )
+    )
+    st.stop()
+
+BacktestResult = _knn.BacktestResult
+ColumnMapping = _knn.ColumnMapping
+EstimateResult = _knn.EstimateResult
+PreparationResult = _knn.PreparationResult
+backtest_knn = _knn.backtest_knn
+estimate_knn = _knn.estimate_knn
+normalize_text = _knn.normalize_text
+prepare_data = _knn.prepare_data
+
+DERIVED_AREA_CONSTRUIDA = _schema.DERIVED_AREA_CONSTRUIDA
+DERIVED_AREA_LOTE = _schema.DERIVED_AREA_LOTE
+DERIVED_AREA_PRIVATIVA = _schema.DERIVED_AREA_PRIVATIVA
+DERIVED_TESTADA = _schema.DERIVED_TESTADA
+enrich_known_schemas = _schema.enrich_known_schemas
+first_existing = _schema.first_existing
+friendly_column_name = _schema.friendly_column_name
 
 
 CUSTOM_CSS = """
@@ -330,7 +394,7 @@ def risk_card(level: str, confidence: int, reasons: list[str]) -> None:
 st.markdown(
     """
     <div class="hero">
-        <span class="eyebrow">KNN Valuation Studio · versão 6.1</span>
+        <span class="eyebrow">KNN Valuation Studio · versão 6.1.1</span>
         <h1>Avaliação por comparáveis com regularização e validação realista.</h1>
         <p>
             K adaptativo, limite de influência individual, média robusta por MAD,

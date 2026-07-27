@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 
 
+MODULE_API_VERSION = "6.1.1"
+
+
 TIPO_ITBI = "guia itbi"
 TIPO_OFERTA = "oferta"
 TIPO_ALUGUEL = "oferta aluguel"

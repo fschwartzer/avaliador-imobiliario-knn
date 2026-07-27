@@ -7,6 +7,9 @@ import numpy as np
 import pandas as pd
 
 
+MODULE_API_VERSION = "6.1.1"
+
+
 DERIVED_AREA_LOTE = "__area_total_lote_efetiva"
 DERIVED_AREA_CONSTRUIDA = "__area_construida_efetiva"
 DERIVED_AREA_PRIVATIVA = "__area_privativa_efetiva"

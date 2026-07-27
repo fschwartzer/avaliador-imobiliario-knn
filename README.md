@@ -1,4 +1,4 @@
-# KNN Valuation Studio — versão 6.1
+# KNN Valuation Studio — versão 6.1.1
 
 Aplicativo Streamlit para inferência de valores imobiliários por comparáveis.
 
@@ -85,3 +85,25 @@ pelos 25% restantes.
 A testada também participa dos alertas de extrapolação, da tabela de cobertura
 e do backtesting. Casos territoriais sem testada válida não entram no
 backtesting.
+
+
+## Correção de implantação no Streamlit Cloud
+
+A versão 6.1.1 evita o `ImportError` causado pela publicação parcial dos
+arquivos. Os três módulos abaixo formam uma unidade e devem ser atualizados
+no mesmo commit:
+
+- `app.py`;
+- `knn_valuation.py`;
+- `schema_utils.py`.
+
+O aplicativo verifica a versão interna desses módulos. Quando identifica uma
+mistura de versões, apresenta uma mensagem de diagnóstico em vez de encerrar
+com um erro de importação redigido pelo Streamlit Cloud.
+
+Após o commit no GitHub:
+
+1. abra **Manage app**;
+2. confirme que a branch e o arquivo principal estão corretos;
+3. use **Reboot app**;
+4. se necessário, limpe o cache do aplicativo.
