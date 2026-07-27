@@ -22,6 +22,7 @@ from schema_utils import (
     DERIVED_AREA_CONSTRUIDA,
     DERIVED_AREA_LOTE,
     DERIVED_AREA_PRIVATIVA,
+    DERIVED_TESTADA,
     enrich_known_schemas,
     first_existing,
     friendly_column_name,
@@ -329,7 +330,7 @@ def risk_card(level: str, confidence: int, reasons: list[str]) -> None:
 st.markdown(
     """
     <div class="hero">
-        <span class="eyebrow">KNN Valuation Studio · versão 6</span>
+        <span class="eyebrow">KNN Valuation Studio · versão 6.1</span>
         <h1>Avaliação por comparáveis com regularização e validação realista.</h1>
         <p>
             K adaptativo, limite de influência individual, média robusta por MAD,
@@ -460,6 +461,18 @@ with st.sidebar:
             ],
             "v6_area_lote",
         )
+        col_testada = optional_column_select(
+            "Testada",
+            columns,
+            [
+                DERIVED_TESTADA,
+                "testada",
+                "testada_terreno",
+                "siat_testada_terreno",
+                "anuncio_testada",
+            ],
+            "v61_testada",
+        )
         col_lat = st.selectbox(
             "Latitude",
             columns,
@@ -580,6 +593,7 @@ mapping = ColumnMapping(
     latitude=col_lat,
     longitude=col_lon,
     siat_area_total_lote=col_area_lote,
+    testada=col_testada,
 )
 
 purpose_series = df[col_finalidade].dropna().astype(str).str.strip()
@@ -631,56 +645,94 @@ with st.form("valuation_form"):
                 format_func=friendly_column_name,
             )
 
-        row2 = st.columns(4)
-        with row2[0]:
-            target_area_lote = (
-                st.number_input(
-                    "Área total do lote (m²)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=10.0,
+        if territorial:
+            row2 = st.columns(4)
+            with row2[0]:
+                target_area_lote = (
+                    st.number_input(
+                        "Área total do lote (m²)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=10.0,
+                    )
+                    if col_area_lote
+                    else 0.0
                 )
-                if col_area_lote
-                else 0.0
-            )
-        with row2[1]:
-            target_area_privativa = (
-                st.number_input(
-                    "Área privativa (m²)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
+            with row2[1]:
+                target_testada = (
+                    st.number_input(
+                        "Testada (m)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.5,
+                        help=(
+                            "Comprimento da frente principal do imóvel. "
+                            "Participa da similaridade física do KNN."
+                        ),
+                    )
+                    if col_testada
+                    else 0.0
                 )
-                if col_area_privativa
-                else 0.0
-            )
-        with row2[2]:
-            target_area_construida = (
-                st.number_input(
-                    "Área construída (m²)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
+            with row2[2]:
+                target_lat = st.number_input(
+                    "Latitude",
+                    min_value=-90.0,
+                    max_value=90.0,
+                    value=-30.0300000,
+                    format="%.7f",
                 )
-                if col_area_construida
-                else 0.0
-            )
-        with row2[3]:
-            st.markdown('<div class="small-muted">Coordenadas</div>', unsafe_allow_html=True)
-            target_lat = st.number_input(
-                "Latitude",
-                min_value=-90.0,
-                max_value=90.0,
-                value=-30.0300000,
-                format="%.7f",
-            )
-            target_lon = st.number_input(
-                "Longitude",
-                min_value=-180.0,
-                max_value=180.0,
-                value=-51.2300000,
-                format="%.7f",
-            )
+            with row2[3]:
+                target_lon = st.number_input(
+                    "Longitude",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    value=-51.2300000,
+                    format="%.7f",
+                )
+            target_area_privativa = 0.0
+            target_area_construida = 0.0
+        else:
+            row2 = st.columns(4)
+            with row2[0]:
+                target_area_privativa = (
+                    st.number_input(
+                        "Área privativa (m²)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=1.0,
+                    )
+                    if col_area_privativa
+                    else 0.0
+                )
+            with row2[1]:
+                target_area_construida = (
+                    st.number_input(
+                        "Área construída (m²)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=1.0,
+                    )
+                    if col_area_construida
+                    else 0.0
+                )
+            with row2[2]:
+                target_lat = st.number_input(
+                    "Latitude",
+                    min_value=-90.0,
+                    max_value=90.0,
+                    value=-30.0300000,
+                    format="%.7f",
+                )
+            with row2[3]:
+                target_lon = st.number_input(
+                    "Longitude",
+                    min_value=-180.0,
+                    max_value=180.0,
+                    value=-51.2300000,
+                    format="%.7f",
+                )
+            target_area_lote = 0.0
+            target_testada = 0.0
 
         calculate = st.form_submit_button(
             "Calcular estimativa regularizada",
@@ -702,6 +754,7 @@ target = {
     "area_construida": target_area_construida if target_area_construida > 0 else None,
     "area_privativa": target_area_privativa if target_area_privativa > 0 else None,
     "siat_area_total_lote": target_area_lote if target_area_lote > 0 else None,
+    "testada": target_testada if target_testada > 0 else None,
     "latitude": target_lat,
     "longitude": target_lon,
 }
@@ -763,6 +816,7 @@ if calculate:
                 "area_construida": col_area_construida,
                 "area_privativa": col_area_privativa,
                 "area_lote": col_area_lote,
+                "testada": col_testada,
                 "lat": col_lat,
                 "lon": col_lon,
                 "duplicate_date": duplicate_date_column,
@@ -903,6 +957,7 @@ with tabs[1]:
             run_columns["area_construida"],
             run_columns["area_privativa"],
             run_columns["area_lote"],
+            run_columns["testada"],
             run_columns["lat"],
             run_columns["lon"],
         ]
@@ -1222,7 +1277,8 @@ with st.expander("Metodologia da versão 6"):
 2. Deduplica ofertas, preservando somente a coleta mais recente.
 3. Ajusta as ofertas pela mediana das razões em quantis pareados com ITBI,
    limitada a 20%.
-4. Normaliza as áreas por estatísticas robustas.
+4. Nos imóveis territoriais, normaliza área do lote e TESTADA por
+   estatísticas robustas; ambas participam da distância física.
 5. Inicia no K escolhido e aumenta o conjunto até alcançar o número efetivo
    de vizinhos ou o K máximo.
 6. Limita o peso individual e redistribui o excedente.

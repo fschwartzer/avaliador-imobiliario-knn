@@ -10,6 +10,7 @@ import pandas as pd
 DERIVED_AREA_LOTE = "__area_total_lote_efetiva"
 DERIVED_AREA_CONSTRUIDA = "__area_construida_efetiva"
 DERIVED_AREA_PRIVATIVA = "__area_privativa_efetiva"
+DERIVED_TESTADA = "__testada_efetiva"
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,36 @@ def enrich_known_schemas(df: pd.DataFrame) -> tuple[pd.DataFrame, SchemaInfo]:
             "Área privativa combinada conforme a origem do registro."
         )
 
+    frontage_series = _combine_by_information_type(
+        data,
+        type_column,
+        offer_columns=[
+            "anuncio_testada",
+            "siat_testada_terreno",
+            "testada",
+            "testada_terreno",
+        ],
+        itbi_columns=[
+            "siat_testada_terreno",
+            "testada",
+            "testada_terreno",
+            "anuncio_testada",
+        ],
+        fallback_columns=[
+            "testada",
+            "testada_terreno",
+            "siat_testada_terreno",
+            "anuncio_testada",
+        ],
+    )
+    if frontage_series.notna().any():
+        data[DERIVED_TESTADA] = frontage_series
+        added.append(DERIVED_TESTADA)
+        notes.append(
+            "Testada combinada: prioriza a testada do anúncio nas ofertas e "
+            "a testada SIAT nas Guias ITBI."
+        )
+
     return data, SchemaInfo(
         siri_detected=siri_detected,
         added_columns=tuple(added),
@@ -193,5 +224,6 @@ def friendly_column_name(column: str) -> str:
         DERIVED_AREA_LOTE: "Área total do lote — combinada automaticamente",
         DERIVED_AREA_CONSTRUIDA: "Área construída — combinada automaticamente",
         DERIVED_AREA_PRIVATIVA: "Área privativa — combinada automaticamente",
+        DERIVED_TESTADA: "Testada — combinada automaticamente",
     }
     return labels.get(column, column)

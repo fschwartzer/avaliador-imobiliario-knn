@@ -22,6 +22,7 @@ class ColumnMapping:
     latitude: str
     longitude: str
     siat_area_total_lote: str | None
+    testada: str | None
 
 
 @dataclass(frozen=True)
@@ -280,6 +281,7 @@ def validate_mapping(df: pd.DataFrame, mapping: ColumnMapping) -> None:
         mapping.area_construida,
         mapping.area_privativa,
         mapping.siat_area_total_lote,
+        mapping.testada,
     ]
     missing = [column for column in required if column not in df.columns]
     missing += [
@@ -343,6 +345,7 @@ def prepare_data(
         mapping.area_construida,
         mapping.area_privativa,
         mapping.siat_area_total_lote,
+        mapping.testada,
     ):
         if column:
             numeric_columns.add(column)
@@ -553,7 +556,12 @@ def _resolve_features(
         ("area_privativa", mapping.area_privativa),
     ]
     if effective_territorial:
-        pairs.append(("siat_area_total_lote", mapping.siat_area_total_lote))
+        pairs.extend(
+            [
+                ("siat_area_total_lote", mapping.siat_area_total_lote),
+                ("testada", mapping.testada),
+            ]
+        )
 
     active: list[tuple[str, str]] = []
     for key, column in pairs:
@@ -571,6 +579,12 @@ def _resolve_features(
     ):
         raise ValueError(
             "Para imóvel territorial, informe e mapeie a área total do lote."
+        )
+    if effective_territorial and not any(
+        key == "testada" for key, _ in active
+    ):
+        raise ValueError(
+            "Para imóvel territorial, informe e mapeie a TESTADA."
         )
     if not active:
         raise ValueError(
@@ -927,6 +941,12 @@ def backtest_knn(
         "_valor_unitario_ajustado",
         reference_area_column,
     ]
+    if territorial:
+        if not mapping.testada:
+            raise ValueError(
+                "O backtesting territorial exige uma coluna de TESTADA mapeada."
+            )
+        required.append(mapping.testada)
     for column in required:
         eligible[column] = to_numeric(eligible[column])
     valid = np.ones(len(eligible), dtype=bool)
@@ -974,6 +994,13 @@ def backtest_knn(
                 if mapping.siat_area_total_lote
                 and pd.notna(row.get(mapping.siat_area_total_lote))
                 and float(row[mapping.siat_area_total_lote]) > 0
+                else None
+            ),
+            "testada": (
+                float(row[mapping.testada])
+                if mapping.testada
+                and pd.notna(row.get(mapping.testada))
+                and float(row[mapping.testada]) > 0
                 else None
             ),
             "latitude": float(row[mapping.latitude]),
